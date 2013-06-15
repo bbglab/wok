@@ -29,9 +29,9 @@ from wok import logger
 from wok.element import DataElement, DataList
 from wok.core import runstates
 from wok.core.utils.sync import synchronized
-from wok.core.nodes import runstates
 from wok.core.utils.sync import Synchronizable, synchronized
 from wok.core.engine.nodes import *
+from wok.core.engine.nodes import runstates
 
 # 2011-10-06 18:39:46,849 bfast_localalign-0000 INFO  : hello world
 _LOG_RE = re.compile("^(\d\d\d\d-\d\d-\d\d) (\d\d:\d\d:\d\d,\d\d\d) (.*) (DEBUG|INFO|WARN|ERROR) : (.*)$")
