@@ -20,9 +20,10 @@
 ###############################################################################
 
 class RunState(object):
-	def __init__(self, id, title):
+	def __init__(self, id, title, symbol):
 		self.id = id
 		self.title = title
+		self.symbol = symbol
 
 	def __eq__(self, other):
 		return isinstance(other, RunState) and self.id == other.id
@@ -37,29 +38,40 @@ class RunState(object):
 		return "{}({})".format(self.title, self.id)
 
 class UndefinedState(Exception):
-	def __init__(self, title):
-		Exception.__init__(self, "Undefined state: {}".format(title))
+	def __init__(self, id=None, title=None):
+		if id is not None:
+			Exception.__init__(self, "Undefined state id: {}".format(id))
+		elif title is not None:
+			Exception.__init__(self, "Undefined state title: {}".format(title))
+		else:
+			Exception.__init__(self, "Undefined state")
 
 
-READY = RunState(1, 'ready')
-WAITING = RunState(2, 'waiting')
-RUNNING = RunState(3, 'running')
-PAUSED = RunState(4, 'paused')
-ABORTING = RunState(5, 'aborting')
-FINISHED = RunState(6, 'finished')
-RETRY = RunState(7, 'retry')
-FAILED = RunState(8, 'failed')
-ABORTED = RunState(9, 'aborted')
+READY = RunState(1, "ready", "RDY")
+WAITING = RunState(2, "waiting", "W")
+RUNNING = RunState(3, "running", "R")
+PAUSED = RunState(4, "paused", "P")
+ABORTING = RunState(5, "aborting", "ABG")
+FINISHED = RunState(6, "finished", "F")
+RETRY = RunState(7, "retry", "RTR")
+FAILED = RunState(8, "failed", "E")
+ABORTED = RunState(9, "aborted", "A")
 
-__STATES = [
+STATES = [
 	READY, WAITING, RUNNING, PAUSED, ABORTING, FINISHED, RETRY, FAILED, ABORTED ]
 
-__MAP = {}
-for s in __STATES:
-	__MAP[s.title] = s
+__ID_MAP = {}
+__TITLE_MAP = {}
+for s in STATES:
+	__ID_MAP[s.id] = s
+	__TITLE_MAP[s.title] = s
 
 def from_title(title):
-	if title not in __MAP:
-		raise UndefinedState(title)
+	if title not in __TITLE_MAP:
+		raise UndefinedState(title=title)
+	return __TITLE_MAP[title]
 
-	return __MAP[title]
+def from_id(id):
+	if id not in __ID_MAP:
+		raise UndefinedState(id=id)
+	return __ID_MAP[id]

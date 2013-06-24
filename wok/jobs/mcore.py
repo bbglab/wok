@@ -1,0 +1,212 @@
+import os
+import time
+import subprocess
+import multiprocessing as mp
+from threading import Thread, Lock, Condition
+from datetime import datetime
+
+from sqlalchemy import Column, Boolean, String
+
+from wok.core import exit_codes, runstates
+
+from wok.jobs.jobs import Job, JobManager
+
+class McoreJob(Job):
+	output_file = Column(String)
+
+class McoreJobManager(JobManager):
+	"""
+	Multi-Core implementation of a job manager. It runs jobs in parallel using multiple cores.
+
+	TODO: Understand and manage task resources (cpu, mem)
+
+	Configuration::
+	    **max_cores**: Maximum number of cores to use. By default it uses all the available cores.
+	"""
+
+	def __init__(self, conf):
+		JobManager.__init__(self, "mcore", conf)
+
+		self._num_cores = self._conf.get("max_cores", mp.cpu_count(), dtype=int)
+
+		self._running = False
+		self._kill_threads = False
+		self._threads = []
+
+		self._run_lock = Lock()
+		self._run_cvar = Condition(self._run_lock)
+
+		self._jobs = {}
+
+		#self._waiting_queue = PriorityQueue()
+
+		self._task_output_files = {}
+
+	def _job_class(self):
+		return McoreJob
+		
+	def _next_job(self, session):
+		job = None
+		while job is None and self._running:
+			try:
+				with self._qlock:
+					job = session.query(McoreJob).filter_by(state=runstates.WAITING).order_by(McoreJob.priority).first()
+					if job is not None:
+						job.state = runstates.RUNNING
+						session.commit()
+			except Exception as e:
+				self._log.exception(e)
+				job = None
+			if job is None and self._running:
+				time.sleep(0.5) #TODO Use a Condition --> self._run_cvar or better an Event
+
+		return job
+
+	def _update_job(self, session, job):
+		session.commit()
+		#with self._run_lock:
+			#self._run_cvar.notify()
+		self._fire_job_updated(job)
+
+	def _run(self):
+		self._log.debug("Run thread ready")
+
+		session = self._create_session()
+		try:
+			while self._running:
+				job = self._next_job(session)
+				if job is None:
+					break
+
+				self._log.debug("Running task [{}] {} ...".format(job.id, job.task_id))
+
+				# Prepare execution
+
+				cmd, args, env = job.cmd, job.args, job.env
+
+				sb = [cmd, " ", " ".join(args)]
+				"""
+				if len(env) > 0:
+					sb += ["\n"]
+					for k, v in env.iteritems():
+						sb += ["\t", str(k), "=", str(v)]
+				"""
+				self._log.debug("".join(sb))
+
+				o = open(job.output_file, "w")
+
+				cwd = self._conf.get("working_directory")
+				if cwd is not None:
+					cwd = os.path.abspath(cwd)
+
+				args = [cmd] + args
+
+				job.start_time = datetime.now()
+				self._update_job(session, job)
+
+				# Run the command
+
+				try:
+					process = subprocess.Popen(
+										args=args,
+										stdin=None,
+										stdout=o,
+										stderr=subprocess.STDOUT,
+										cwd=cwd,
+										env=env)
+
+					session.refresh(job, ["state"])
+					while job.state == runstates.RUNNING and process.poll() is None and not self._kill_threads:
+						time.sleep(1)
+						session.refresh(job, ["state"])
+
+					job.end_time = datetime.now()
+
+					if process.poll() is None: # and (self._kill_threads or job.state != runstates.RUNNING):
+						self._log.warn("Killing task {} ...".format(job.task_id))
+						process.terminate()
+						while process.poll() is None:
+							time.sleep(1)
+
+						job.state = runstates.ABORTED
+						job.exit_code = process.returncode
+						job.exit_message = "Task aborted"
+					else:
+						job.state = runstates.FINISHED if process.returncode == 0 else runstates.FAILED
+						job.exit_code = process.returncode
+						job.exit_message = "Task {} with return code {}".format(job.state.title, job.exit_code)
+
+						#TODO get task results: exit_message & exception_trace
+
+				except Exception as e:
+					self._log.exception(e)
+					import traceback
+					job.state = runstates.FAILED
+					job.end_time = time.time()
+					job.exit_code = exit_codes.RUN_THREAD_EXCEPTION
+					job.exit_message = "Exception {}".format(str(e))
+					job.exception_trace = traceback.format_exc()
+				finally:
+					o.close()
+
+				if job.state == runstates.FINISHED:
+					self._log.debug("Task finished [{}] {}".format(job.id, job.task_id))
+				elif job.state == runstates.ABORTED:
+					self._log.debug("Task aborted [{}] {}".format(job.id, job.task_id))
+				else:
+					sb = ["Task failed [{}] {}: {}".format(job.id, job.task_id, job.exit_message)]
+					if job.exception_trace is not None:
+						sb += ["\n", job.exception_trace]
+					self._log.error("".join(sb))
+
+				self._update_job(session, job)
+
+		finally:
+			session.close()
+
+		self._log.debug("Run thread finished")
+
+	def _start(self):
+		self._running = True
+
+		self._log.debug("num_cores={}".format(self._num_cores))
+
+		for i in xrange(self._num_cores):
+			thread = Thread(target=self._run, name="{}-{:02}".format(self._name, i))
+			self._threads.append(thread)
+			thread.start()
+
+	def _submit(self, job):
+		default_output_path = os.path.join(self._work_path, "output")
+		output_path = self._conf.get("output_path", default_output_path)
+		job.output_file = os.path.abspath(os.path.join(output_path, "{}.txt".format(job.task_id)))
+
+		with self._run_lock:
+			if not os.path.exists(output_path):
+				os.makedirs(output_path)
+
+	def _join(self, session, job):
+		while self._running and job.state not in [runstates.FINISHED, runstates.FAILED, runstates.ABORTED]:
+			self._run_cvar.wait(2)
+			session.expire(job, [McoreJob.state])
+
+	def _output(self, job):
+		if job.output_file is None:
+			return None
+
+		return open(job.output_file)
+
+	def _close(self):
+		with self._run_lock:
+			self._running = False
+			self._kill_threads = False
+			self._run_cvar.notify(self._num_cores)
+
+		for thread in self._threads:
+			timeout = 30
+			while thread.isAlive():
+				thread.join(1)
+				timeout -= 1
+				if timeout == 0:
+					timeout = 30
+					self._kill_threads = True

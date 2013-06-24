@@ -20,25 +20,28 @@
 ###############################################################################
 
 import os
-import os.path
 import StringIO
+import logging
 from Queue import Queue, Empty
-from threading import Thread, Condition
+import threading
 from multiprocessing import cpu_count
 
 from wok import logger
-from wok.element import DataList
-from wok.config import ConfigBuilder
+from wok.config import COMMAND_CONF
+from wok.config.data import Data, DataList
+from wok.config.cli import ConfigBuilder
 from wok.core import runstates
-#from wok.core.engine.db import SqliteEngineDB
 from wok.core.utils.sync import Synchronizable, synchronized
 from wok.core.utils.logs import parse_log
 from wok.core.flow.loader import FlowLoader
-from wok.core.engine.instance import Instance, SynchronizedInstance
-from wok.core.jobmgr.factory import create_job_manager
 from wok.core.storage import StorageContext
 from wok.core.storage.factory import create_storage
+from wok.platform.factory import create_platform
+from wok.jobs import JobSubmission
+from wok.jobs import create_job_manager
+from wok.core.cmd import create_command_builder
 
+from instance import Instance, SynchronizedInstance
 
 class WokEngine(Synchronizable):
 	"""
@@ -49,13 +52,15 @@ class WokEngine(Synchronizable):
 	def __init__(self, conf):
 		Synchronizable.__init__(self)
 
-		self.gconf = conf
+		self._global_conf = conf
 
-		self.conf = wok_conf = conf["wok"]
+		self._conf = wok_conf = conf["wok"]
 
-		self._log = logger.get_logger("wok-engine", conf = wok_conf.get("log"))
+		self._log = logger.get_logger("wok.engine", conf = wok_conf.get("log"))
 
 		self._work_path = wok_conf.get("work_path", os.path.join(os.getcwd(), "wok"))
+		if not os.path.exists(self._work_path):
+			os.makedirs(self._work_path)
 
 		self._flow_path = wok_conf.get("flow_path")
 		if self._flow_path is None:
@@ -74,11 +79,15 @@ class WokEngine(Synchronizable):
 		self._instances = []
 		self._instances_map = {}
 
+		self._stopping_instances = {}
+
 		#self._lock = Lock()
-		self._cvar = Condition(self._lock)
+		self._cvar = threading.Condition(self._lock)
 		
 		self._run_thread = None
 		self._running = False
+
+		self._finished_event = threading.Event()
 
 		self._job_task_map = {}
 
@@ -90,46 +99,67 @@ class WokEngine(Synchronizable):
 
 		self._notified = False
 
-		self._job_mgr = self._create_job_manager(wok_conf)
+		#db_path = os.path.join(self._work_path, "engine.db")
+		#self._db = create_db("sqlite:///{}".format(db_path))
 
-		self._stopping_instances = {}
-		
+		self._platform = self._create_platform()
+		self._job_manager = self._create_job_manager()
+
 		self._storage = self._create_storage(wok_conf)
-
-		#TODO self._db = SqliteEngineDB(self)
 
 		self._restore_state()
 
-	def _restore_state(self):
-		#TODO restore db state
-		pass
-	
-	def _create_job_manager(self, wok_conf):
-		jobmgr_name = wok_conf.get("job_manager", "mcore", dtype=str)
-		
-		jobmgr_conf = wok_conf.create_element()
-		if "job_managers.default" in wok_conf:
-			jobmgr_conf.merge(wok_conf["job_managers.default"])
+	def _create_platform(self):
+		"""
+		Creates the platform according to the configuration
+		:return: Platform
+		"""
 
-		jobmgr_conf_key = ".".join(["job_managers", jobmgr_name])
-		if jobmgr_conf_key in wok_conf:
-			jobmgr_conf.merge(wok_conf[jobmgr_conf_key])
+		conf = self._conf.get("platform")
+		if conf is None:
+			conf = Data.element()
+		elif not Data.is_element(conf):
+			self._log.error("Wrong configuration type for 'platform': {}".format(conf))
+			conf = Data.element()
 
-#		if "__output_path" not in sched_conf:
-#			sched_conf["__output_path"] = self._output_path
+		name = conf.get("type", "local")
 
-		if "work_path" not in jobmgr_conf:
-			jobmgr_conf["work_path"] = os.path.join(self._work_path, jobmgr_name)
+		if "work_path" not in conf:
+			conf["work_path"] = os.path.join(self._work_path, "platform", name)
 
-		self._log.debug("Creating '{}' scheduler with configuration {}".format(jobmgr_name, repr(jobmgr_conf)))
+		self._log.info("Creating '{}' platform ...".format(name))
+		self._log.debug("Platform configuration: {}".format(repr(conf)))
 
-		return create_job_manager(jobmgr_name, self, jobmgr_conf)
+		return create_platform(name, conf)
+
+	def _create_job_manager(self):
+		"""
+		Creates the job manager according to the configuration
+		:return: JobManager
+		"""
+
+		name = "mcore"
+
+		conf = Data.element()
+		if "jobs" in self._conf:
+			conf.merge(self._conf["jobs"])
+			if "type" in conf:
+				name = conf["type"]
+				del conf["type"]
+
+		if "work_path" not in conf:
+			conf["work_path"] = os.path.join(self._work_path, "jobs", name)
+
+		self._log.info("Creating '{}' job manager ...".format(name))
+		self._log.debug("Job manager configuration: {}".format(repr(conf)))
+
+		return create_job_manager(name, conf)
 
 	@staticmethod
 	def _create_storage(wok_conf):
 		storage_conf = wok_conf.get("storage")
 		if storage_conf is None:
-			storage_conf = wok_conf.create_element()
+			storage_conf = wok_conf.element()
 
 		storage_type = storage_conf.get("type", "sfs")
 
@@ -138,6 +168,13 @@ class WokEngine(Synchronizable):
 			storage_conf["work_path"] = os.path.join(wok_work_path, "storage")
 
 		return create_storage(storage_type, StorageContext.CONTROLLER, storage_conf)
+
+	def _on_job_update(self, event, **kwargs):
+		self.notify()
+
+	def _restore_state(self):
+		#TODO restore db state
+		pass
 
 	def _instance_job_ids(self, instance):
 		return [job_id for job_id, task in self._job_task_map.items() if task.instance == instance]
@@ -166,37 +203,59 @@ class WokEngine(Synchronizable):
 					timeout += 1
 		return msg_batch
 
+	def __prepare_cmd(self, task):
+		task_conf = task.conf
+		execution = task.parent.execution
+
+		exec_mode = execution.mode
+
+		exec_conf = task_conf.get(COMMAND_CONF)
+		if exec_conf is None:
+			exec_conf = Data.element()
+
+		exec_conf_key = "{}.{}".format(COMMAND_CONF, exec_mode)
+		if exec_conf_key in task_conf:
+			exec_conf.merge(task_conf[exec_conf_key])
+
+		cmd_builder = create_command_builder(exec_mode, exec_conf)
+
+		cmd, args, env = cmd_builder.prepare(task)
+
+		return cmd, args, env
+
+	def __job_submissions(self, tasks):
+		for task in tasks:
+			js = JobSubmission(
+				task=task, task_id=task.id, task_conf=task.conf,
+				priority=max(min(task.priority, 1), 0))
+			js.cmd, js.args, js.env = self.__prepare_cmd(task)
+			yield js
+
 	# threads ----------------------
 
 	@synchronized
 	def _run(self):
 		self._running = True
 
-		job_mgr = self._job_mgr
-
 		num_exc = 0
-
-		job_mgr.start()
 
 		# Start the logs threads
 
 		for i in range(cpu_count()):
 		#for i in range(1):
-			t = Thread(target = self._logs, args = (i, ), name = "wok-engine-logs-%d" % i)
+			t = threading.Thread(target=self._logs, args=(i, ), name="wok-engine-logs-%d" % i)
 			self._logs_threads += [t]
 			t.start()
 
 		# Start the join thread
 
-		self._join_thread = Thread(
-								target = self._join,
-								name = "wok-engine-join")
+		self._join_thread = threading.Thread(target=self._join, name="wok-engine-join")
 		self._join_thread.start()
 
-		log_conf = self.conf.get("log")
+		log_conf = self._conf.get("log")
 		if log_conf is not None:
-			log_conf = log_conf.clone().expand_vars(context = self.gconf)
-		_log = logger.get_logger("wok-engine-run", conf = log_conf)
+			log_conf = log_conf.clone().expand_vars(context=self._global_conf)
+		_log = logger.get_logger("wok.engine.run", conf=log_conf)
 
 		_log.debug("Engine run thread ready")
 
@@ -207,12 +266,9 @@ class WokEngine(Synchronizable):
 				# submit tasks ready to be executed
 				for inst in self._instances:
 					tasks = inst.schedule_tasks()
-					if len(tasks) > 0:
-						#_log.debug("ready_tasks:\n" + "\n".join(["\t" + t.id for t in tasks]))
-						job_ids = job_mgr.submit(tasks)
-						for i, task in enumerate(tasks):
-							self._job_task_map[job_ids[i]] = task
-							task.job_id = job_ids[i]
+					submissions = self.__job_submissions(tasks)
+					for js, job_id in self._job_manager.submit(submissions):
+						self._job_task_map[job_id] = js.task
 				
 				#_log.debug("Waiting for events ...")
 
@@ -233,25 +289,21 @@ class WokEngine(Synchronizable):
 							if len(job_ids) == 0:
 								inst.state = runstates.ABORTED
 							else:
-								_log.info("Stopping %d jobs for instance %s ..." % (len(job_ids), inst.name))
+								_log.info("Stopping {} jobs for instance {} ...".format(len(job_ids), inst.name))
 								self._stopping_instances[inst] = set(job_ids)
-								job_mgr.stop(job_ids)
+								self._job_manager.abort(job_ids)
 
 				#_log.debug("Checking job state changes ...")
-
-				job_states = job_mgr.state()
-				
-				#_log.debug("Job states:\n" + "\n".join("\t{}: {}".format(jid, jst) for jid, jst in job_states))
 
 				updated_modules = set()
 
 				# detect tasks which state has changed
-				for job_id, state in job_states:
+				for job_id, state in self._job_manager.state():
 					task = self._job_task_map[job_id]
 					if task.state != state:
 						task.state = state
 						updated_modules.add(task.parent)
-						_log.debug("Task %s changed state to %s" % (task.id, state))
+						_log.debug("Task {} changed state to {}".format(task.id, state))
 
 						# if task has finished, queue it for logs retrieval
 						# otherwise queue it directly for joining
@@ -262,50 +314,55 @@ class WokEngine(Synchronizable):
 				#_log.debug("Updating modules state ...")
 
 				# update affected modules state
-				#updated_instances = set()
+				updated_instances = set()
 				for m in updated_modules:
 					inst = m.instance
 					inst.update_module_state_from_children(m)
-					_log.debug("Module %s updated state to %s ..." % (m.id, m.state))
-					#updated_instances.add(inst)
+					_log.debug("Module {} updated state to {} ...".format(m.id, m.state))
+					updated_instances.add(inst)
 
-				#for inst in updated_instances:
+					if self._log.isEnabledFor(logging.INFO):
+						count = m.update_tasks_count_by_state()
+						sb = ["[{}] {} ({})".format(m.instance.name, m.id, m.state.title)]
+						sep = " "
+						for state in runstates.STATES:
+							if state.title in count:
+								sb += [sep, "{}={}".format(state.symbol, count[state.title])]
+								if sep == " ":
+									sep = ", "
+						self._log.info("".join(sb))
+
+				for inst in updated_instances:
 				#	self._log.debug(repr(inst))
-				#	inst.update_state()
+					inst.update_state()
 
 			except Exception:
 				num_exc += 1
 				_log.exception("Exception in wok-engine run thread (%d)" % num_exc)
 
-		self._lock.release()
-		job_mgr.close()
-		self._lock.acquire()
-
 		try:
 			# print instances state before leaving the thread
-			for inst in self._instances:
-				_log.debug("Instances state:\n" + repr(inst))
+			#for inst in self._instances:
+			#	_log.debug("Instances state:\n" + repr(inst))
 
 			for t in self._logs_threads:
 				t.join()
 
 			self._join_thread.join()
 
-			_log.info("Engine run thread finished")
+			_log.debug("Engine run thread finished")
 		except:
 			pass
-
-		#TODO self._db.close()
 		
 		self._running = False
 
 	def _logs(self, index):
 		"Log retrieval thread"
 
-		log_conf = self.conf.get("log")
+		log_conf = self._conf.get("log")
 		if log_conf is not None:
-			log_conf = log_conf.clone().expand_vars(context = self.gconf)
-		_log = logger.get_logger("wok-engine-logs-%d" % index, conf = log_conf)
+			log_conf = log_conf.clone().expand_vars(context = self._global_conf)
+		_log = logger.get_logger("wok.engine.logs-%d" % index, conf = log_conf)
 		
 		_log.debug("Engine logs thread ready")
 
@@ -323,7 +380,7 @@ class WokEngine(Synchronizable):
 				_log.debug("Reading logs for task %s ..." % task.id)
 
 				task.state_msg = "Reading logs"
-				output = self._job_mgr.output(job_id)
+				output = self._job_manager.output(job_id)
 				if output is None:
 					output = StringIO.StringIO()
 
@@ -362,15 +419,15 @@ class WokEngine(Synchronizable):
 
 		#self._db.clean()
 
-		_log.info("Engine logs thread finished")
+		_log.debug("Engine logs thread finished")
 
 	def _join(self):
 		"Joiner thread"
 
-		log_conf = self.conf.get("log")
+		log_conf = self._conf.get("log")
 		if log_conf is not None:
-			log_conf = log_conf.clone().expand_vars(context = self.gconf)
-		_log = logger.get_logger("wok-engine-join", conf = log_conf)
+			log_conf = log_conf.clone().expand_vars(context=self._global_conf)
+		_log = logger.get_logger("wok.engine.join", conf=log_conf)
 
 		_log.debug("Engine join thread ready")
 
@@ -386,7 +443,7 @@ class WokEngine(Synchronizable):
 
 				#_log.debug("Joining task %s ..." % task.id)
 				with self._lock:
-					task.job_result = self._job_mgr.join(job_id)
+					task.job_result = self._job_manager.join(job_id)
 					del self._job_task_map[job_id]
 					task.state_msg = ""
 
@@ -394,7 +451,9 @@ class WokEngine(Synchronizable):
 						stop_engine = True
 						for inst in self._instances:
 							stop_engine = stop_engine and (inst.state in [runstates.FINISHED, runstates.FAILED])
-						self._running = not stop_engine
+						#self._running = not stop_engine
+						if stop_engine:
+							self._finished_event.set()
 
 					_log.debug("Task %s joined" % task.id)
 
@@ -412,9 +471,13 @@ class WokEngine(Synchronizable):
 				num_exc += 1
 				_log.exception("Exception in wok-engine join thread (%d)" % num_exc)
 
-		_log.info("Engine join thread finished")
+		_log.debug("Engine join thread finished")
 
 	# API -----------------------------------
+
+	@property
+	def conf(self):
+		return self._conf
 
 	@property
 	def work_path(self):
@@ -422,7 +485,7 @@ class WokEngine(Synchronizable):
 	
 	@property
 	def job_manager(self):
-		return self._job_mgr
+		return self._job_manager
 
 	@property
 	def storage(self):
@@ -433,58 +496,86 @@ class WokEngine(Synchronizable):
 		return self._flow_loader
 
 	@synchronized
-	def start(self, wait = True, single_run=False):
+	def start(self, wait=True, single_run=False):
 		self._log.info("Starting engine ...")
+
+		self._platform.start()
+
+		self._job_manager.start()
+		self._job_manager.add_listener(self._on_job_update)
 
 		self._single_run = single_run
 		
-		self._run_thread = Thread(target = self._run, name = "wok-engine-run")
+		self._run_thread = threading.Thread(target = self._run, name = "wok-engine-run")
 		self._run_thread.start()
+
+		self._log.info("Engine started")
 
 		if wait:
 			self._lock.release()
 			self.wait()
 			self._lock.acquire()
 
-	@synchronized
 	def wait(self):
-		self._log.info("Waiting for the engine ...")
+		self._log.info("Waiting for the engine to finish ...")
+
+		try:
+			finished = self._finished_event.wait(1)
+			while not finished:
+				finished = self._finished_event.wait(1)
+		except KeyboardInterrupt:
+			self._log.warn("Ctrl-C pressed ...")
+		except Exception as e:
+			self._log.error("Exception while waiting for the engine to finish, stopping the engine ...")
+			self._log.exception(e)
+
+		self._log.info("Finished waiting for the engine ...")
+
+	def _stop_threads(self):
+		self._log.info("Stopping threads ...")
 
 		if self._run_thread is not None:
-			self._lock.release()
 
-			key_int = False
+			with self._lock:
+				self._running = False
+				self._cvar.notify()
+
 			while self._run_thread.isAlive():
 				try:
 					self._run_thread.join(1)
 				except KeyboardInterrupt:
-					with self._lock:
-						if not key_int:
-							self._log.warn("Ctrl-C pressed, stopping the engine ...")
-							self._running = False
-							key_int = True
-						else:
-							self._log.warn("Ctrl-C pressed, killing the process ...")
-							import signal
-							os.kill(os.getpid(), signal.SIGTERM)
-				except Exception:
-					with self._lock:
-						self._log.exception("Exception while waiting for the engine to finish, stopping the engine ...")
-						self._running = False
+					self._log.warn("Ctrl-C pressed, killing the process ...")
+					import signal
+					os.kill(os.getpid(), signal.SIGTERM)
+				except Exception as e:
+					self._log.error("Exception while waiting for threads to finish ...")
+					self._log.exception(e)
+					self._log.warn("killing the process ...")
+					import signal
+					os.kill(os.getpid(), signal.SIGTERM)
 
-			self._lock.acquire()
 			self._run_thread = None
+
+		self._log.info("All threads finished ...")
 
 	@synchronized
 	def stop(self):
 		self._log.info("Stopping the engine ...")
 
-		self._running = False
-		self._cvar.notify()
+		self._finished_event.set()
 
 		self._lock.release()
-		self.wait()
+
+		self._job_manager.close()
+
+		self._platform.close()
+
+		if self._run_thread is not None:
+			self._stop_threads()
+
 		self._lock.acquire()
+
+		self._log.info("Engine stopped")
 
 	def notify(self, lock=True):
 		if lock:
@@ -551,6 +642,6 @@ class WokEngine(Synchronizable):
 			del self._instances_map[name]
 			self._instances.remove(inst)
 
-			self._job_mgr.stop(job_ids=self._instance_job_ids(inst))
+			self._job_manager.abort(job_ids=self._instance_job_ids(inst))
 
 			self._storage.clean(inst)

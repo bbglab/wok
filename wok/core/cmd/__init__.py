@@ -19,4 +19,5 @@
 #
 ###############################################################################
 
-from wok.core.cmd.cmd import *
+from cmd import CommmandBuilder
+from factory import create_command_builder

@@ -19,10 +19,10 @@
 #
 ###############################################################################
 
-from wok.element import DataElement
+from wok.config.data import DataElement
 
 from wok.core import runstates
-from wok.core.flow.model import PORT_MODE_IN, PORT_MODE_OUT
+
 
 class Node(object):
 
@@ -237,13 +237,13 @@ class BaseModuleNode(ModelNode):
 		e["wsize"] = self.wsize
 		e["conf"] = self.model.conf
 		e["resources"] = self.resources
-		e.create_element("tasks_count", self._tasks_count_by_state)
+		e.element("tasks_count", self._tasks_count_by_state)
 
-		ports = e.create_element("ports")
-		in_ports = ports.create_list("in")
+		ports = e.element("ports")
+		in_ports = ports.list("in")
 		for port in self.in_ports:
 			in_ports.append(port.to_element())
-		out_ports = ports.create_list("out")
+		out_ports = ports.list("out")
 		for port in self.out_ports:
 			out_ports.append(port.to_element())		
 		return e
@@ -361,11 +361,11 @@ class FlowNode(BaseModuleNode):
 
 	def to_element(self, e = None):
 		e = BaseModuleNode.to_element(self, e)
-		mlist = e.create_list("modules")
+		mlist = e.list("modules")
 		for module in self.modules:
 			mlist.append(module.to_element())
 
-		e.create_element("modules_count", self._modules_count_by_state)
+		e.element("modules_count", self._modules_count_by_state)
 		return e
 
 class LeafModuleNode(BaseModuleNode):

@@ -25,10 +25,10 @@ class MultiData(PortData):
 
 	TYPE_NAME = "joined_data"
 
-	def __init__(self, sources = None, start = 0, size = -1, conf = None,
-					port_desc = None, factory = None):
+	def __init__(self, sources=None, start=0, size=-1, conf=None,
+					port_desc=None, factory=None):
 						
-		PortData.__init__(self, None, conf, port_desc, factory)
+		PortData.__init__(self, None, conf, factory)
 
 		if conf is not None:
 			self._sources = []
@@ -60,20 +60,20 @@ class MultiData(PortData):
 		e["type"] = self.TYPE_NAME
 		e["start"] = self._start
 		e["size"] = self._size
-		l = e.create_list()
+		l = e.list()
 		for src in self._sources:
-			pe = e.create_element()
+			pe = e.element()
 			l += [src.fill_element(pe)]
 		e["sources"] = l
 		return e
 	
-	def get_slice(self, start = None, size = None):
+	def get_slice(self, start=None, size=None):
 		if start is None:
 			start = self._start
 		if size is None:
 			size = self._size
 
-		return MultiData(self._sources, start, size, port_desc = self.port_desc)
+		return MultiData(self._sources, start, size)
 
 	def reader(self):
 		return MultiDataReader(self._sources, self._start, self._size)

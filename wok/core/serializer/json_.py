@@ -21,7 +21,8 @@
 
 import json
 
-from wok.element import Data, DataFactory
+from wok.config.data import Data
+
 
 class JsonSerializer(object):
 	def __init__(self, enhanced = False):
@@ -39,5 +40,5 @@ class JsonSerializer(object):
 	def unmarshall(self, raw):
 		value = json.loads(raw)
 		if self.__enhanced and isinstance(value, (list, dict)):
-			value = DataFactory.from_native(value)
+			value = Data.create(value)
 		return value

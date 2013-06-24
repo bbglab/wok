@@ -20,7 +20,7 @@
 ###############################################################################
 
 from wok import logger
-from wok.element import DataElement
+from wok.config.data import Data
 
 class Storage(object):
 	"""
@@ -37,41 +37,26 @@ class Storage(object):
 
 	@staticmethod
 	def _task_config_to_element(task):
-		e = DataElement(key_sep = "/")
-		e["id"] = task.id
-		e["name"] = task.name
-		e["index"] = task.index
-		e["module"] = task.parent.id
-		e["instance"] = task.instance.name
-		e["conf"] = task.conf
+		e = Data.element(dict(
+			id=task.id, name=task.name, index=task.index,
+			module=task.parent.id, instance=task.instance.name,
+			conf=task.conf))
 
 		#TODO depends on module definition
-		iter = e.create_element("iteration")
-		iter["strategy"] = "dot"
-		iter["size"] = 0
-		
-		ports = e.create_element("ports")
+		e.element("iteration", dict(strategy="dot", size=0))
 
-		in_ports = ports.create_list("in")
+		ports = e.element("ports")
+
+		in_ports = ports.list("in")
 		for i, port_node in enumerate(task.parent.in_ports):
-			pe = DataElement(key_sep = "/")
-#			pe["name"] = port_node.name
-#			pe["serializer"] = port_node.serializer
-#			pe["partition"] = pdata.partition
-#			pe["start"] = pdata.start
-#			pe["size"] = pdata.size
-			#task.in_port_data[i].fill_element(pe.create_element("data"))
-			task.in_port_data[i].fill_element(pe)
+			pe = task.in_port_data[i].fill_element(Data.element())
+			pe.element("port", dict(name=port_node.name, module=port_node.parent.id))
 			in_ports.append(pe)
 			
-		out_ports = ports.create_list("out")
+		out_ports = ports.list("out")
 		for i, port_node in enumerate(task.parent.out_ports):
-			pe = DataElement(key_sep = "/")
-#			pe["name"] = port_node.name
-#			pe["serializer"] = port_node.serializer
-#			pe["partition"] = pdata.partition
-			#task.out_port_data[i].fill_element(pe.create_element("data"))
-			task.out_port_data[i].fill_element(pe)
+			pe = task.out_port_data[i].fill_element(Data.element())
+			pe.element("port", dict(name=port_node.name, module=port_node.parent.id))
 			out_ports.append(pe)
 		
 		return e

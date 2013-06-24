@@ -21,7 +21,7 @@
 
 import pickle
 
-from wok.element import DataFactory
+from wok.config.data import Data
 
 class PickleSerializer(object):
 	def __init__(self, enhanced = False):
@@ -41,5 +41,5 @@ class PickleSerializer(object):
 		raw = raw.replace(r"\n", "\n")
 		value = pickle.loads(raw)
 		if self.__enhanced and isinstance(value, (list, dict)):
-			value = DataFactory.from_native(value)
+			value = Data.create(value)
 		return value
