@@ -19,12 +19,50 @@
 #
 ###############################################################################
 
-class WokAlreadyRunningError(Exception):
+class EngineAlreadyRunningError(Exception):
 	pass
 
-class WokInvalidOperationForStatusError(Exception):
+class InvalidStatusOperationError(Exception):
 	def __init__(self, op, status):
 		Exception.__init__(self, "Invalid operation '{}' for current status '{}'".format(op, status))
 
-class WokUninitializedError(Exception):
+class EngineUninitializedError(Exception):
 	pass
+
+class ConfigMissingError(Exception):
+	def __init__(self, key):
+		Exception.__init__(self, "Missing configuration: '{}'".format(key))
+
+class ConfigTypeError(Exception):
+	def __init__(self, key, value=None):
+		if value is None:
+			Exception.__init__(self, "Wrong configuration type for '{}'".format(key))
+		else:
+			Exception.__init__(self, "Wrong configuration type for '{}': '{}'".format(key, value))
+
+# Job manager
+
+class UnknownJobManager(Exception):
+	def __init__(self, name):
+		Exception.__init__(self, "Unknown job manager: {}".format(name))
+
+
+class UnknownJob(Exception):
+	def __init__(self, job_id):
+		Exception.__init__(self, "Unknown job id: {}".format(job_id))
+
+# Command builder
+
+class UnknownCommandBuilder(Exception):
+	def __init__(self, name):
+		Exception.__init__(self, "Unknown command builder: {}".format(name))
+
+
+class MissingValueError(Exception):
+	def __init__(self, name):
+		Exception.__init__(self, "Missing required value: {}".format(name))
+
+
+class LanguageError(Exception):
+	def __init__(self, lang):
+		Exception.__init__(self, "Unknown language: {}".format(lang))

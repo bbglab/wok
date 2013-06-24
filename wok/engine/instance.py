@@ -23,15 +23,15 @@ import sys
 import os.path
 import math
 import re
+import logging
 from datetime import datetime, timedelta
 
 from wok import logger
-from wok.element import DataElement, DataList
+from wok.config.data import DataElement, DataList
 from wok.core import runstates
 from wok.core.utils.sync import synchronized
-from wok.core.utils.sync import Synchronizable, synchronized
-from wok.core.engine.nodes import *
-from wok.core.engine.nodes import runstates
+from wok.core.utils.sync import Synchronizable
+from wok.engine.nodes import *
 
 # 2011-10-06 18:39:46,849 bfast_localalign-0000 INFO  : hello world
 _LOG_RE = re.compile("^(\d\d\d\d-\d\d-\d\d) (\d\d:\d\d:\d\d,\d\d\d) (.*) (DEBUG|INFO|WARN|ERROR) : (.*)$")
@@ -77,15 +77,16 @@ class Instance(object):
 		if "title" in inst_conf:
 			self.title = inst_conf["title"]
 
-		self._log = logger.get_logger(self.name, conf = self.engine.conf.get("log"))
+		self._log = logger.get_logger("wok.instance", conf=self.engine.conf.get("log"))
 
 		self.root_flow = self.engine.flow_loader.load_from_file(self.flow_file)
 
 		# self._log.debug("\n" + repr(self.root_flow))
 
-		inst_conf["flow.name"] = self.root_flow.name
-		inst_conf["flow.path"] = os.path.dirname(os.path.abspath(self.flow_file))
-		inst_conf["flow.file"] = os.path.basename(self.flow_file)
+		inst_conf.element("flow", dict(
+			name=self.root_flow.name,
+			path=os.path.dirname(os.path.abspath(self.flow_file)),
+			file=os.path.basename(self.flow_file)))
 
 		if "modules" in inst_conf:
 			self._mod_conf_rules = inst_conf["module_rules"]
@@ -107,7 +108,7 @@ class Instance(object):
 
 		# TODO self._save_initial_state()
 
-		self._log.debug("Flow node tree:\n" + repr(self.root_node))
+		#self._log.debug("Flow node tree:\n" + repr(self.root_node))
 
 	@property
 	def state(self):
@@ -172,21 +173,6 @@ class Instance(object):
 					mod_port = module.get_out_port(def_port.model.name)
 					if mod_port is None:
 						raise Exception("The port {} is not defined in the flow {}".format(def_port.model.name, mod_def.flow_ref.uri))
-				"""
-				# link module ports according to mod_def
-				for port_def in mod_def.in_ports:
-					port = module.get_in_port(port_def.name)
-					if port is None:
-						raise Exception("The port {} is not defined in the flow {}".format(port_def.name, mod_def.flow_ref.uri))
-					self._override_port(port.model, port_def)
-				for port_def in mod_def.out_ports:
-					port = module.get_out_port(port_def.name)
-					if port is None:
-						raise Exception("The port {} is not defined in the flow {}".format(port_def.name, mod_def.flow_ref.uri))
-					if port_def.serializer is not None:
-						port.model.serializer = port_def.serializer
-					#port.model.link = port_def.link
-				"""
 			self._module_index[mns] = module
 
 			flow.modules += [module]
@@ -403,25 +389,6 @@ class Instance(object):
 		for mod in module.modules:
 			self._propagate_deps(mod, module.depends)
 
-# TODO copy data to storage ?
-#			if port_id in self._port_data_conf: # attached through user configuration
-#				port_def.link = [] # override flow specified connections
-#				port_data_conf = self._port_data_conf[port_id]
-#				if isinstance(port_data_conf, DataElement):
-#					raise Exception("Configurable attached port unimplemented")
-#				else: # By default we expect a file/dir path
-#					path = str(port_data_conf)
-#					if not os.path.exists(path):
-#						raise Exception("Port {}: File not found: {}".format(port_id, path))
-#
-#					if os.path.isdir(path):
-#						port.data = PathData(port.serializer, path)
-#					elif os.path.isfile(path):
-#						port.data = FileData(port.serializer, path)
-#					else:
-#						raise Exception("Port {}: Unexpected path type: {}".format(port_id, path))
-#			elif ...
-
 	def _calculate_dependencies(self, module):
 		mod_req_sources = {} # module <-> sources required by the module
 		source_providers = {} # source <-> modules that provide the source
@@ -538,16 +505,21 @@ class Instance(object):
 						mnode.conf[entry[0]] = entry[1]
 
 	def schedule_tasks(self):
+		"""
+		Schedule tasks ready for being submitted.
+		:return: list of task nodes.
+		"""
+
 		if self.state != runstates.RUNNING:
 			return []
 
 		tasks = []
 		require_rescheduling = True
 		while require_rescheduling:
-			require_rescheduling, tasks = self._schedule_tasks(self.root_node, tasks)
+			require_rescheduling, tasks = self._schedule_module_tasks(self.root_node, tasks)
 		return tasks
 
-	def _schedule_tasks(self, module, tasks):
+	def _schedule_module_tasks(self, module, tasks):
 		require_rescheduling = False
 		if module.state == runstates.PAUSED:
 			return (require_rescheduling, tasks)
@@ -578,7 +550,7 @@ class Instance(object):
 			#TODO elif module.state == runstates.FAILED and retrying:
 		else:
 			for m in module.modules:
-				req_resch, tasks = self._schedule_tasks(m, tasks)
+				req_resch, tasks = self._schedule_module_tasks(m, tasks)
 				require_rescheduling |= req_resch
 
 			self.update_module_state_from_children(module, recursive = False)
@@ -593,7 +565,7 @@ class Instance(object):
 			psize = port.data.size()
 			psizes += [psize]
 			pwsize = port.wsize
-			self._log.debug("{}: size={}, wsize={}".format(port.id, psize, pwsize))
+			self._log.debug("[{}] {}: size={}, wsize={}".format(self.name, port.id, psize, pwsize))
 			if pwsize < mwsize:
 				mwsize = pwsize
 
@@ -626,11 +598,11 @@ class Instance(object):
 				else:
 					num_partitions = int(math.ceil(psize / float(mwsize)))
 					maxpar = module.maxpar
-					self._log.debug("{}: maxpar={}".format(module.id, maxpar))
+					self._log.debug("[{}] {}: maxpar={}".format(self.name, module.id, maxpar))
 					if maxpar > 0 and num_partitions > maxpar:
 						mwsize = int(math.ceil(psize / float(maxpar)))
 						num_partitions = int(math.ceil(psize / float(mwsize)))
-					self._log.debug("{}: num_par={}, psize={}, mwsize={}".format(module.id, num_partitions, psize, mwsize))
+					self._log.debug("[{}] {}: num_par={}, psize={}, mwsize={}".format(self.name, module.id, num_partitions, psize, mwsize))
 
 			start = 0
 			partitions = []
@@ -640,7 +612,7 @@ class Instance(object):
 				end = min(start + mwsize, psize)
 				size = end - start
 				partitions += [(task, start,  size)]
-				self._log.debug("{}[{:04d}]: start={}, end={}, size={}".format(module.id, i, start, end, size))
+				self._log.debug("[{}] {}[{:04d}]: start={}, end={}, size={}".format(self.name, module.id, i, start, end, size))
 				start += mwsize
 
 			#self._log.debug(repr(partitions))
@@ -657,7 +629,16 @@ class Instance(object):
 		return tasks
 
 	def update_state(self):
-		pass
+		if False and self._log.isEnabledFor(logging.DEBUG): #FIXME
+			count = self.root_node.update_tasks_count_by_state()
+			sb = ["[{}]".format(self.name)]
+			sep = " "
+			for state in runstates.STATES:
+				if state.title in count:
+					sb += [sep, "{}={}".format(state, count[state.title])]
+					if sep == " ":
+						sep = ", "
+			self._log.debug("".join(sb))
 
 	@staticmethod
 	def change_module_state(module, state):
@@ -674,7 +655,7 @@ class Instance(object):
 				if module in m.waiting:
 					m.waiting.remove(module)
 
-	def update_module_state_from_children(self, module, recursive = True):
+	def update_module_state_from_children(self, module, recursive=True):
 		"""
 		Updates the state of a module depending on the state of the children elements
 		"""
@@ -689,6 +670,8 @@ class Instance(object):
 		else:
 			if runstates.ABORTED in children_states:
 				state = runstates.ABORTED
+			if runstates.ABORTING in children_states:
+				state = runstates.ABORTING
 			elif runstates.RUNNING in children_states:
 				state = runstates.RUNNING
 			elif runstates.WAITING in children_states:
@@ -733,13 +716,14 @@ class Instance(object):
 		
 		if module.is_leaf_module:
 			for task in module.tasks:
-				if task.job_id is not None and \
-					task.state not in [runstates.FINISHED, runstates.FAILED, runstates.ABORTED]:
+				if task.job_id is not None and task.state not in [
+						runstates.FINISHED, runstates.FAILED, runstates.ABORTED]:
 
 					job_ids.append(task.job_id)
 		else:
 			for m in module.modules:
 				job_ids = self.job_ids(m, job_ids)
+
 		return job_ids
 
 	
@@ -788,11 +772,15 @@ class Instance(object):
 		
 		self.state = runstates.RUNNING
 
+		self._log.info("Instance started: {}".format(self.name))
+
 	def pause(self):
 		if self.state not in [runstates.RUNNING, runstates.PAUSED]:
 			raise Exception("Illegal action '%s' for state '%s'" % ("pause", self.state))
 
 		self.state = runstates.PAUSED
+
+		self._log.info("Instance paused: {}".format(self.name))
 
 	def stop(self):
 		if self.state not in [runstates.RUNNING, runstates.PAUSED]:
@@ -800,6 +788,8 @@ class Instance(object):
 
 		if self.state != runstates.READY:
 			self.state = runstates.ABORTING
+
+		self._log.info("Instance aborted: {}".format(self.name))
 
 	def reset(self):
 		if self.state not in [runstates.READY, runstates.PAUSED, runstates.FINISHED,
@@ -810,7 +800,11 @@ class Instance(object):
 
 		self.state = runstates.READY
 
+		self._log.info("Instance reset: {}".format(self.name))
+
 	def reload(self):
+		self._log.info("Instance reload: {}".format(self.name))
+
 		raise Exception("Unimplemented")
 
 	# --------------------------------------------
@@ -871,7 +865,7 @@ class Instance(object):
 
 		self.root_node.update_tasks_count_by_state()
 		self.root_node.update_modules_count_by_state()
-		self.root_node.to_element(e.create_element("root"))
+		self.root_node.to_element(e.element("root"))
 
 		return e
 
@@ -931,8 +925,8 @@ class SynchronizedInstance(Synchronizable):
 		self.__instance.pause()
 
 	@synchronized
-	def stop(self):
-		self.__instance.stop()
+	def abort(self):
+		self.__instance.abort()
 
 	@synchronized
 	def reset(self):

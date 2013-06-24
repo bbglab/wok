@@ -22,13 +22,12 @@
 ###############################################################################
 
 import os
-import os.path
 from datetime import datetime
 
 from wok import logger
-from wok.config import OptionsConfig
-from wok.element import DataElement
-from wok.core.engine import WokEngine
+from wok.config.cli import OptionsConfig
+from wok.config.data import DataElement
+from wok.engine import WokEngine
 
 def add_options(parser):
 	parser.add_option("-n", "--instance-name", dest="instance_names",
@@ -45,12 +44,10 @@ def main():
 
 	initial_conf = {
 		"wok" : {
-			"execution" : {
-				"mode" : {
-					"native" : {
-						"python" : {
-							"lib_path" : [install_path]
-						}
+			"command" : {
+				"native" : {
+					"python" : {
+						"lib_path" : [install_path]
 					}
 				}
 			}
@@ -60,9 +57,9 @@ def main():
 	}
 
 	conf = OptionsConfig(
-		initial_conf = initial_conf,
-		args_usage = "[<flow-file>]",
-		add_options = add_options)
+		initial_conf=initial_conf,
+		args_usage="[<flow-file>]",
+		add_options=add_options)
 
 	if "wok" not in conf:
 		print("Missing wok configuration")
@@ -75,7 +72,9 @@ def main():
 	# initialize logging
 
 	logger.initialize(wok_conf.get("log"))
-	log = logger.get_logger("wok-run", conf = wok_conf.get("log"))
+	log = logger.get_logger("wok.run", conf=wok_conf.get("log"))
+
+	#logger.get_logger('sqlalchemy.engine', conf=dict(level="info"))
 
 	log.debug("Wok configuration: %s" % repr(wok_conf))
 
@@ -97,6 +96,8 @@ def main():
 	# create engine
 	wok = WokEngine(conf)
 
+	retcode = 0
+
 	try:
 		# create instances
 		if flow_paths is not None:
@@ -112,13 +113,12 @@ def main():
 					else:
 						instance_name = "%s-%02d" % (default_instance_name, i)
 
-				wok.create_instance(instance_name, conf.builder, flow_path)
+				inst = wok.create_instance(instance_name, conf.builder, flow_path)
 				if not server_mode or start_instances:
-					# TODO start instance
-					pass
+					inst.start()
 
 		# start wok on the background
-		wok.start(wait = False)
+		wok.start(wait = False, single_run=not server_mode)
 
 		# run server
 		if server_mode:
@@ -148,8 +148,11 @@ def main():
 			wok.wait()
 	except Exception as e:
 		log.exception(e)
+		retcode = -1
+	finally:
 		wok.stop()
-		raise
+
+	exit(retcode)
 
 if __name__ == "__main__":
 	main()

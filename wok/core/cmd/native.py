@@ -20,25 +20,23 @@
 ###############################################################################
 
 import os
-import os.path
 
-from wok.element import DataElement
-from wok.core.cmd import CmdBuilder
-from wok.core.cmd.errors import *
+from wok.config import COMMAND_CONF
+from wok.config.data import Data
 
-class UnknownNativeCmdBuilderLanguage(Exception):
-	def __init__(self, lang):
-		Exception.__init__(self, "Unknown native command builder language: {}".format(lang))
+from cmd import CommmandBuilder
+from wok.core.errors import MissingValueError, LanguageError
 
-class NativeCmdBuilder(CmdBuilder):
+
+class NativeCommmandBuilder(CommmandBuilder):
 	def __init__(self, conf):
-		CmdBuilder.__init__(self, conf)
+		CommmandBuilder.__init__(self, conf)
 
-	def _storage_conf(self, value, path = None):		
+	def _storage_conf(self, value, path=None):
 		if path is None:
 			path = []
 
-		if not isinstance(value, DataElement):
+		if not Data.is_element(value):
 			yield (".".join(path), value)
 		else:
 			for key in value.keys():
@@ -46,49 +44,89 @@ class NativeCmdBuilder(CmdBuilder):
 					yield (k, v)
 
 	def prepare(self, task):
-		wok_conf = task.instance.conf.get("wok")
-		if wok_conf is None:
-			wok_conf = DataElement()
+		execution = task.parent.execution
+		exec_conf = execution.conf
+		if exec_conf is None:
+			exec_conf = Data.element()
 
-		lang = self.conf.get("language", "python")
+		if "script_path" not in exec_conf:
+			raise MissingValueError("script_path")
 
-		lang_key = "execution.mode.native.{}".format(lang)
-		if lang_key in wok_conf:
-			lang_conf = wok_conf[lang_key]
-		else:
-			lang_conf = DataElement()
+		script_path = exec_conf["script_path"]
 
-		if "script_path" not in self.conf:
-			raise MissingRequiredOption("script_path")
+		lang = exec_conf.get("language", "python")
 
-		script_path = self.conf["script_path"]
+		mod_conf = task.instance.conf.clone().expand_vars()
 
-		# Enviroment variables
-		env = DataElement()
-		for k, v in os.environ.items():
-			env[k] = v
-		env.merge(self.conf.get("env"))
+		cmd_conf = mod_conf.get(COMMAND_CONF, default=Data.element)
+		#native_conf = cmd_conf.get("default", default=Data.element)
+		#native_conf.merge(cmd_conf.get("native", default=Data.element))
 
+		# Environment variables
+		env = Data.element()
+		#for k, v in os.environ.items():
+		#	env[k] = v
+		env.merge(cmd_conf.get("default.env"))
+		env.merge(cmd_conf.get("{}.env".format(lang)))
+		env.merge(exec_conf.get("env"))
+
+		cmd = cmd_conf.get("shell.bin", "/bin/bash")
+		
+		args = []
+		
+		default_sources = cmd_conf.get("default.source", default=Data.list)
+		if isinstance(default_sources, basestring):
+			default_sources = Data.list([default_sources])
+
+		sources = cmd_conf.get("{}.source".format(lang), default=Data.list)
+		if isinstance(sources, basestring):
+			sources = Data.list([sources])
+
+		for source in default_sources + sources:
+			if len(args) != 0:
+				args += [";"]
+			args += ["source", source]
+	
 		if lang == "python":
-			cmd = lang_conf.get("bin", "python")
-			args = [self._task_absolute_path(task, script_path)]
-			env.merge(self.conf.get("env"))
+			if len(args) != 0:
+				args += [";"]
 
-			if "lib_path" in lang_conf:
+			sources = cmd_conf.get("{}.virtualenv".format(lang), default=Data.list)
+			if isinstance(sources, basestring):
+				sources = Data.list([sources])
+
+			for source in sources:
+				if len(args) != 0:
+					args += [";"]
+				args += ["source", os.path.join(source, "bin", "activate")]
+
+			if len(args) != 0:
+				args += [";"]
+
+			args += [cmd_conf.get("python.bin", "python")]
+			args += [self._task_absolute_path(task, script_path)]
+
+			lib_path = cmd_conf.get("python.lib_path")
+			if lib_path is not None:
+				if Data.is_list(lib_path):
+					lib_path = ":".join(lib_path)
+
 				if "PYTHONPATH" in env:
-					env["PYTHONPATH"] = ":".join(lang_conf["lib_path"]) + ":" + env["PYTHONPATH"]
+					env["PYTHONPATH"] = lib_path + ":" + env["PYTHONPATH"]
 				else:
-					env["PYTHONPATH"] = ":".join(lang_conf["lib_path"])
+					env["PYTHONPATH"] = lib_path
 		else:
-			raise UnknownNativeCmdBuilderLanguage(lang)
+			raise LanguageError(lang)
 
-		args += ["-D", "instance_name=" + task.instance.name,
-				"-D", "module_path=" + ".".join([task.parent.namespace, task.parent.name]),
-				"-D", "task_index=" + str(task.index)]
+		args += ["-D", "instance_name={}".format(task.instance.name),
+				"-D", "module_path={}".format(".".join([task.parent.namespace, task.parent.name])),
+				"-D", "task_index={}".format(task.index)]
 
 		for key, value in self._storage_conf(task.instance.engine.storage.basic_conf):
 			args += ["-D", "storage.{}={}".format(key, value)]
 
+		args = ["-c", " ".join(args)]
+		
 		return cmd, args, env.to_native()
 
 	@staticmethod

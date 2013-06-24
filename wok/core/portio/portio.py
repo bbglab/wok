@@ -19,24 +19,22 @@
 #
 ###############################################################################
 
-from wok.element import DataElement
+from wok.config.data import DataElement
 from wok.core.serializer import DEFAULT_SERIALIZER_NAME
 from wok.core.serializer import SerializerFactory
 
 class PortData(object):
-	def __init__(self, serializer = None, conf = None, port_desc = None, factory = None):
+	def __init__(self, serializer=None, conf=None, factory=None):
 		"""Initialize the port data"""
 
 		if conf is not None:
 			self._serializer = conf.get("serializer", DEFAULT_SERIALIZER_NAME)
-			self.port_desc = conf.get("port_desc")
 		else:
 			if serializer is None:
 				self._serializer = DEFAULT_SERIALIZER_NAME
 			else:
 				self._serializer = serializer
 
-		self.port_desc = port_desc
 		self.factory = factory
 
 	@property
@@ -49,10 +47,7 @@ class PortData(object):
 
 	def fill_element(self, e):
 		"""Fill the DataElement e with attributes of the port data"""
-
 		e["serializer"] = self._serializer
-		if self.port_desc is not None:
-			e["port"] = self.port_desc
 		return e
 
 	def to_element(self, key_sep = None):

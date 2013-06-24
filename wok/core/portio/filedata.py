@@ -28,9 +28,9 @@ class FileData(PortData):
 	TYPE_NAME = "file_data"
 
 	def __init__(self, serializer = None, path = None, start = 0, size = -1,
-					conf = None, port_desc = None, factory = None):
+					conf = None, factory = None):
 
-		PortData.__init__(self, serializer, conf, port_desc, factory)
+		PortData.__init__(self, serializer, conf, factory)
 
 		if conf is not None:
 			self._path = conf.get("path", path)

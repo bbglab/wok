@@ -78,7 +78,7 @@ def instance_control(instance_name):
 		elif action == "pause":
 			inst.pause()
 		elif action == "stop":
-			inst.stop()
+			inst.abort()
 		elif action == "reset":
 			inst.reset()
 		elif action == "reload":

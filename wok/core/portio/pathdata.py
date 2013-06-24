@@ -29,10 +29,9 @@ class PathData(PortData):
 	TYPE_NAME = "path_data"
 
 	def __init__(self, serializer = None, path = None, partition = -1,
-					start = 0, size = -1, conf = None, port_desc = None,
-					factory = None):
+					start = 0, size = -1, conf = None, factory = None):
 
-		PortData.__init__(self, serializer, conf, port_desc, factory)
+		PortData.__init__(self, serializer, conf, factory)
 
 		if conf is not None:
 			self._path = conf.get("path", path)
@@ -69,7 +68,7 @@ class PathData(PortData):
 	def get_slice(self, start = None, size = None):
 		if start is None and size is None:
 			return PathData(self._serializer, self._path, self._partition,
-							self._start, self._size, port_desc = self.port_desc)
+							self._start, self._size)
 
 		partition = 0
 
@@ -88,16 +87,14 @@ class PathData(PortData):
 		if size is None:
 			size = 0
 
-		return PathData(self._serializer, self._path, partition,
-						start, size, port_desc = self.port_desc)
+		return PathData(self._serializer, self._path, partition, start, size)
 
 	def get_partition(self, partition = None):
 		if partition is None:
 			partition = self._last_partition
 			self._last_partition += 1
 
-		return PathData(self._serializer, self._path, partition = partition,
-						port_desc = self.port_desc)
+		return PathData(self._serializer, self._path, partition = partition)
 	
 	def size(self):
 		if not os.path.exists(self._path):

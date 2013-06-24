@@ -23,7 +23,8 @@ import os.path
 import json
 
 from wok import VERSION
-from wok.element import DataElement, DataFactory
+
+from data import DataElement, Data
 
 class ConfigFile(object):
 	def __init__(self, path):
@@ -33,7 +34,7 @@ class ConfigFile(object):
 		try:
 			f = open(self.path, "r")
 			v = json.load(f)
-			cf = DataFactory.from_native(v)
+			cf = Data.create(v)
 			conf.merge(cf)
 			f.close()
 		except Exception as e:
@@ -54,7 +55,7 @@ class ConfigValue(object):
 			v = json.loads(self.value)
 		except:
 			v = self.value
-		conf[self.key] = DataFactory.from_native(v)
+		conf[self.key] = Data.create(v)
 
 class ConfigElement(object):
 	def __init__(self, element):
@@ -88,7 +89,7 @@ class ConfigBuilder(object):
 
 	def get_conf(self, conf = None):
 		if conf is None:
-			conf = DataElement()
+			conf = Data.element()
 		self.merge_into(conf)
 		return conf
 
@@ -134,7 +135,7 @@ class OptionsConfig(DataElement):
 			default=None, choices=["debug", "info", "warn", "error", "critical", "notset"],
 			help="Which log level: debug, info, warn, error, critical, notset")
 
-		parser.add_option("-c", "--conf", action="append", dest="conf_files", default=[], metavar="FILE",
+		parser.add_option("-C", "--conf", action="append", dest="conf_files", default=[], metavar="FILE",
 			help="Load configuration from a file. Multiple files can be specified")
 			
 		parser.add_option("-D", action="append", dest="data", default=[], metavar="PARAM=VALUE",
@@ -149,11 +150,13 @@ class OptionsConfig(DataElement):
 
 		if initial_conf is not None:
 			if isinstance(initial_conf, dict):
-				initial_conf = DataFactory.from_native(initial_conf)
+				initial_conf = Data.create(initial_conf)
 			self.builder.add_element(initial_conf)
 
 		if self.options.log_level is not None:
 			self.builder.add_value("wok.log.level", self.options.log_level)
+			self.builder.add_value("wok.jobs.log.level", self.options.log_level)
+			self.builder.add_value("wok.platform.log.level", self.options.log_level)
 
 		conf_files = []
 		if initial_conf_files is not None:
@@ -166,7 +169,7 @@ class OptionsConfig(DataElement):
 				self.builder.add_file(conf_file)
 				files.append(os.path.abspath(conf_file))
 
-			self.builder.add_value("__files", DataFactory.from_native(files))
+			self.builder.add_value("__files", Data.create(files))
 
 		for data in self.options.data:
 			d = data.split("=")

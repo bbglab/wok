@@ -30,3 +30,4 @@ AUTHORS_EMAIL = u"christian.perez@upf.edu"
 
 COPYRIGHT = u"2011, Universitat Pompeu Fabra"
 
+import config.data as element

@@ -23,8 +23,8 @@ import time
 from datetime import timedelta
 
 from wok import logger
-from wok import exit_codes
-from wok.config import OptionsConfig
+from wok.config.cli import OptionsConfig
+from wok.core import exit_codes
 from wok.task.port import create_port, PORT_MODE_IN, PORT_MODE_OUT
 from wok.core.storage import StorageContext
 from wok.core.storage.factory import create_storage

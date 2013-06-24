@@ -19,7 +19,7 @@
 #
 ###############################################################################
 
-class CmdBuilder(object):
+class CommmandBuilder(object):
 	def __init__(self, conf):
 		self.conf = conf
 

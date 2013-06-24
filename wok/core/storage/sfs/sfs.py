@@ -20,11 +20,10 @@
 ###############################################################################
 
 import os
-import os.path
 import shutil
 import json
 
-from wok.element import DataElement, DataFactory, DataElementJsonEncoder
+from wok.config.data import Data, DataJsonEncoder
 from wok.core.storage import Storage, StorageContext
 
 from wok.core.storage.sfs.logs import SfsLogs
@@ -115,7 +114,7 @@ class SfsStorage(Storage):
 	def basic_conf(self):
 		"Return the basic configuration needed to start a task execution"
 
-		c = DataElement()
+		c = Data.element()
 		c["type"] = self.name
 		c["work_path"] = self.work_path
 		return c
@@ -144,7 +143,7 @@ class SfsStorage(Storage):
 		e = self._task_config_to_element(task)
 		try:
 			f = open(task_config_path, "w")
-			json.dump(e, f, sort_keys=True, indent=4, cls=DataElementJsonEncoder)
+			json.dump(e, f, sort_keys=True, indent=4, cls=DataJsonEncoder)
 			f.close()
 		except:
 			self._log.error("Failed creating task config file: " + task_config_path)
@@ -161,7 +160,7 @@ class SfsStorage(Storage):
 		try:
 			f = open(task_config_path, "r")
 			o = json.load(f)
-			e = DataFactory.from_native(o, key_sep = ".")
+			e = Data.create(o, key_sep = ".")
 			f.close()
 		except:
 			self._log.error("Failed reading task configuration: " + task_config_path)
@@ -183,19 +182,13 @@ class SfsStorage(Storage):
 		mod_path = self._module_path_from_node(port.parent)
 		port_path = os.path.join(mod_path, "ports", port.name)
 		self._ensure_path(port_path)
-		e = DataElement(key_sep = "/")
-		e["name"] = port.name
-		e["module"] = port.parent.id
-		return PathData(port.serializer, port_path, port_desc = e)
+		return PathData(port.serializer, port_path)
 
 	def create_port_linked_data(self, port, linked_data):
 		return linked_data
 
 	def create_port_joined_data(self, port, joined_data):
-		e = DataElement(key_sep = "/")
-		e["name"] = port.name
-		e["module"] = port.parent.id
-		return MultiData(joined_data, port_desc = e)
+		return MultiData(joined_data)
 
 	def create_port_data_from_file(self, path):
 		raise Exception("Unimplemented")
@@ -209,7 +202,6 @@ class SfsStorage(Storage):
 			raise Exception("Unknown port type: " + type)
 
 		#self._log.debug("Creating port data: type=%s, conf=%s" % (type, repr(port_conf)))
-		pdata = _PORT_DATA_TYPES[type](conf = port_conf,
-					factory = self.create_port_data_from_conf)
+		pdata = _PORT_DATA_TYPES[type](conf=port_conf, factory=self.create_port_data_from_conf)
 
 		return pdata

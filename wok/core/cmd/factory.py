@@ -19,18 +19,18 @@
 #
 ###############################################################################
 
-from wok.core.cmd.errors import UnknownCmdBuilder
-from wok.core.cmd.native import NativeCmdBuilder
+from native import NativeCommmandBuilder
+from wok.core.errors import UnknownCommandBuilder
 
 __CMD_BUILDERS = {
-	"native" : NativeCmdBuilder
+	"native" : NativeCommmandBuilder
 }
 
-def create_cmd_builder(name, conf):
+def create_command_builder(name, conf):
 	if name is None:
 		name = "native"
 	
 	if name not in __CMD_BUILDERS:
-		raise UnknownCmdBuilder(name)
+		raise UnknownCommandBuilder(name)
 
 	return __CMD_BUILDERS[name](conf)

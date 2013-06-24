@@ -19,4 +19,4 @@
 #
 ###############################################################################
 
-from wok.core.engine.engine import *
+from wok.engine.engine import *
