@@ -26,7 +26,7 @@ from datetime import datetime
 
 from wok import logger
 from wok.config.cli import OptionsConfig
-from wok.config.data import DataElement
+from wok.config.data import Data
 from wok.engine import WokEngine
 
 def add_options(parser):
@@ -58,7 +58,7 @@ def main():
 
 	conf = OptionsConfig(
 		initial_conf=initial_conf,
-		args_usage="[<flow-file>]",
+		args_usage="[<project:flow/version>]",
 		add_options=add_options)
 
 	if "wok" not in conf:
@@ -67,22 +67,26 @@ def main():
 
 	# wok configuration
 
-	wok_conf = conf["wok"].expand_vars(context = conf)
+	wok_conf = conf["wok"].expand_vars(context=conf)
 
 	# initialize logging
 
 	logger.initialize(wok_conf.get("log"))
-	log = logger.get_logger("wok.run", conf=wok_conf.get("log"))
 
-	#logger.get_logger('sqlalchemy.engine', conf=dict(level="info"))
+	for (log_name, log_conf) in wok_conf.get("logging", default=Data.list):
+		if isinstance(log_conf, basestring):
+			log_conf = Data.element(dict(level=log_conf))
+		logger.get_logger(log_name, conf=log_conf)
+
+	log = logger.get_logger("wok.run")
 
 	log.debug("Wok configuration: %s" % repr(wok_conf))
 
 	# check arguments
 
-	flow_paths = None
+	flow_uris = None
 	if len(conf.args) > 0:
-		flow_paths = conf.args
+		flow_uris = conf.args
 	#elif len(conf.args) > 1:
 	#	log.error("More than one workflow definition file specified")
 	#	exit(-1)
@@ -100,20 +104,20 @@ def main():
 
 	try:
 		# create instances
-		if flow_paths is not None:
+		if flow_uris is not None:
 			instance_names = conf.options.instance_names
 			if instance_names is None:
 				instance_names = []
-			for i, flow_path in enumerate(flow_paths):
+			for i, flow_uri in enumerate(flow_uris):
 				if i < len(instance_names):
 					instance_name = instance_names[i]
 				else:
-					if len(flow_paths) == 1:
+					if len(flow_uris) == 1:
 						instance_name = default_instance_name
 					else:
 						instance_name = "%s-%02d" % (default_instance_name, i)
 
-				inst = wok.create_instance(instance_name, conf.builder, flow_path)
+				inst = wok.create_instance(instance_name, conf.builder, flow_uri)
 				if not server_mode or start_instances:
 					inst.start()
 
@@ -128,7 +132,7 @@ def main():
 
 			log_conf = wok_conf.get("server.log")
 			if log_conf is None:
-				log_conf = DataElement()
+				log_conf = Data.element()
 				log_conf["level"] = "warn"
 			app_log = logger.get_logger("werkzeug", conf = log_conf)
 			app_log.info("Log configured")

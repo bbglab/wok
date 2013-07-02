@@ -1,5 +1,6 @@
 import os
 import time
+import tempfile
 import subprocess
 import multiprocessing as mp
 from threading import Thread, Lock, Condition
@@ -24,6 +25,8 @@ class McoreJobManager(JobManager):
 	    **max_cores**: Maximum number of cores to use. By default it uses all the available cores.
 	"""
 
+	job_class = McoreJob
+
 	def __init__(self, conf):
 		JobManager.__init__(self, "mcore", conf)
 
@@ -42,9 +45,6 @@ class McoreJobManager(JobManager):
 
 		self._task_output_files = {}
 
-	def _job_class(self):
-		return McoreJob
-		
 	def _next_job(self, session):
 		job = None
 		while job is None and self._running:
@@ -82,33 +82,34 @@ class McoreJobManager(JobManager):
 
 				# Prepare execution
 
-				cmd, args, env = job.cmd, job.args, job.env
+				script, env = job.script, job.env
 
-				sb = [cmd, " ", " ".join(args)]
-				"""
+				sb = ["Script:\n", script]
 				if len(env) > 0:
-					sb += ["\n"]
 					for k, v in env.iteritems():
-						sb += ["\t", str(k), "=", str(v)]
-				"""
+						sb += ["\n{}={}".format(k, v)]
 				self._log.debug("".join(sb))
 
-				o = open(job.output_file, "w")
+				o = open(job.output, "w")
 
 				cwd = self._conf.get("working_directory")
 				if cwd is not None:
 					cwd = os.path.abspath(cwd)
 
-				args = [cmd] + args
-
 				job.start_time = datetime.now()
 				self._update_job(session, job)
 
-				# Run the command
+				# Prepare the script file
+
+				script_path = tempfile.mkstemp(prefix=job.task_id, suffix=".sh")[1]
+				with open(script_path, "w") as f:
+					f.write(script)
+
+				# Run the script
 
 				try:
 					process = subprocess.Popen(
-										args=args,
+										args=["/bin/bash", script_path],
 										stdin=None,
 										stdout=o,
 										stderr=subprocess.STDOUT,
@@ -148,6 +149,8 @@ class McoreJobManager(JobManager):
 					job.exception_trace = traceback.format_exc()
 				finally:
 					o.close()
+					if os.path.exists(script_path):
+						os.remove(script_path)
 
 				if job.state == runstates.FINISHED:
 					self._log.debug("Task finished [{}] {}".format(job.id, job.task_id))
@@ -179,22 +182,22 @@ class McoreJobManager(JobManager):
 	def _submit(self, job):
 		default_output_path = os.path.join(self._work_path, "output")
 		output_path = self._conf.get("output_path", default_output_path)
-		job.output_file = os.path.abspath(os.path.join(output_path, "{}.txt".format(job.task_id)))
+		job.output = os.path.abspath(os.path.join(output_path, "{}.txt".format(job.task_id)))
 
 		with self._run_lock:
 			if not os.path.exists(output_path):
 				os.makedirs(output_path)
 
+	def _output(self, job):
+		if job.output is None:
+			return None
+
+		return open(job.output)
+
 	def _join(self, session, job):
 		while self._running and job.state not in [runstates.FINISHED, runstates.FAILED, runstates.ABORTED]:
 			self._run_cvar.wait(2)
 			session.expire(job, [McoreJob.state])
-
-	def _output(self, job):
-		if job.output_file is None:
-			return None
-
-		return open(job.output_file)
 
 	def _close(self):
 		with self._run_lock:

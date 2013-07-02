@@ -26,6 +26,36 @@ from wok import VERSION
 
 from data import DataElement, Data
 
+class ConfigMerge(object):
+	def __init__(self, element):
+		self.element = element
+
+	def merge_into(self, conf):
+		conf.merge(self.element)
+
+class ConfigValue(object):
+	def __init__(self, key, value):
+		self.key = key
+		self.value = value
+
+	def merge_into(self, conf):
+		try:
+			v = json.loads(self.value)
+		except:
+			v = self.value
+		conf[self.key] = Data.create(v)
+
+class ConfigElement(object):
+	def __init__(self, key, value):
+		self.key = key
+		self.value = value
+
+	def merge_into(self, conf):
+		if self.key in conf:
+			conf[self.key].merge(self.value)
+		else:
+			conf[self.key] = self.value
+
 class ConfigFile(object):
 	def __init__(self, path):
 		self.path = os.path.abspath(path)
@@ -43,26 +73,7 @@ class ConfigFile(object):
 					self.path, ":\n\n", str(e), "\n"]
 			logger.get_logger("config").error("".join(msg))
 			raise
-			
 
-class ConfigValue(object):
-	def __init__(self, key, value):
-		self.key = key
-		self.value = value
-
-	def merge_into(self, conf):
-		try:
-			v = json.loads(self.value)
-		except:
-			v = self.value
-		conf[self.key] = Data.create(v)
-
-class ConfigElement(object):
-	def __init__(self, element):
-		self.element = element
-
-	def merge_into(self, conf):
-		conf.merge(self.element)
 
 class ConfigBuilder(object):
 	def __init__(self, conf_builder=None):
@@ -71,14 +82,17 @@ class ConfigBuilder(object):
 		else:
 			self.__parts = [p for p in conf_builder.__parts]
 
-	def add_file(self, path):
-		self.__parts += [ConfigFile(path)]
+	def add_merge(self, element):
+		self.__parts += [ConfigMerge(element)]
 
 	def add_value(self, key, value):
 		self.__parts += [ConfigValue(key, value)]
 
-	def add_element(self, element):
-		self.__parts += [ConfigElement(element)]
+	def add_element(self, key, value):
+		self.__parts += [ConfigElement(key, value)]
+
+	def add_file(self, path):
+		self.__parts += [ConfigFile(path)]
 
 	def add_builder(self, builder):
 		self.__parts += [builder]
@@ -87,13 +101,13 @@ class ConfigBuilder(object):
 		for part in self.__parts:
 			part.merge_into(conf)
 
-	def get_conf(self, conf = None):
+	def get_conf(self, conf=None):
 		if conf is None:
 			conf = Data.element()
 		self.merge_into(conf)
 		return conf
 
-	def __call__(self, conf = None):
+	def __call__(self, conf=None):
 		return self.get_conf(conf)
 
 class OptionsConfig(DataElement):
@@ -135,6 +149,9 @@ class OptionsConfig(DataElement):
 			default=None, choices=["debug", "info", "warn", "error", "critical", "notset"],
 			help="Which log level: debug, info, warn, error, critical, notset")
 
+		parser.add_option("-P", "--project", action="append", dest="projects", default=[], metavar="PATH",
+			help="Include this project. Multiple projects can be specified.")
+
 		parser.add_option("-C", "--conf", action="append", dest="conf_files", default=[], metavar="FILE",
 			help="Load configuration from a file. Multiple files can be specified")
 			
@@ -151,12 +168,16 @@ class OptionsConfig(DataElement):
 		if initial_conf is not None:
 			if isinstance(initial_conf, dict):
 				initial_conf = Data.create(initial_conf)
-			self.builder.add_element(initial_conf)
+			self.builder.add_merge(initial_conf)
 
+		"""
 		if self.options.log_level is not None:
 			self.builder.add_value("wok.log.level", self.options.log_level)
-			self.builder.add_value("wok.jobs.log.level", self.options.log_level)
 			self.builder.add_value("wok.platform.log.level", self.options.log_level)
+			self.builder.add_value("wok.platform.jobs.log.level", self.options.log_level)
+		"""
+
+		# Load configuration
 
 		conf_files = []
 		if initial_conf_files is not None:
@@ -178,6 +199,13 @@ class OptionsConfig(DataElement):
 
 			self.builder.add_value(d[0], d[1])
 
+		# Load projects
+
+		projects = self._load_projects(self.options.projects)
+		self.builder.add_element("wok.projects", projects)
+
+		# Build configuration
+
 		self.builder.merge_into(self)
 
 		if len(required) > 0:
@@ -185,6 +213,29 @@ class OptionsConfig(DataElement):
 
 		if expand_vars:
 			self.expand_vars()
+
+	def _load_projects(self, paths):
+		projects = Data.list()
+		for path in paths:
+			if not os.path.isabs(path):
+				path = os.path.abspath(path)
+
+			if os.path.isfile(path):
+				project_file = os.path.basename(path)
+				path = os.path.dirname(path)
+			else:
+				project_file = os.path.join(path, "project.conf")
+
+			if not os.path.exists(project_file):
+				raise Exception("Project configuration not found: {}".format(path))
+
+			project_conf = Data.element()
+			cfg = ConfigFile(project_file)
+			cfg.merge_into(project_conf)
+			project_conf["path"] = path
+			projects += [project_conf]
+
+		return projects
 
 	def check_required(self, required):
 		for name in required:

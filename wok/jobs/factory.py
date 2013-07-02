@@ -44,4 +44,6 @@ def create_job_manager(name, conf):
 	if name not in __JOB_MANAGERS:
 		raise UnknownJobManager(name)
 
+	conf["type"] = name
+
 	return __JOB_MANAGERS[name](conf)

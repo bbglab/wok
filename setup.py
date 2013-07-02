@@ -33,7 +33,8 @@ setup(
     install_requires = [
 		'docutils>=0.3',
 		'Flask==0.9',
-		'pygments'
+		'pygments',
+		'SQLAlchemy==0.8.1'
 	],
 
     package_data = {

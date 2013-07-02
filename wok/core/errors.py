@@ -19,6 +19,10 @@
 #
 ###############################################################################
 
+class UnimplementedError(Exception):
+	def __init__(self):
+		Exception.__init__(self, "Unimplemented")
+
 class EngineAlreadyRunningError(Exception):
 	pass
 

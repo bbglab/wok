@@ -132,6 +132,8 @@ class Flow(_BaseModule):
 					path = None, library = None, modules = None):
 		_BaseModule.__init__(self, name, title, desc, enabled, serializer, wsize, maxpar, conf, in_ports, out_ports)
 
+		self.project = None
+
 		self.path = path
 
 		self.library = library

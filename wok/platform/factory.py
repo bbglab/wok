@@ -10,4 +10,6 @@ def create_platform(name, conf):
 	if name not in __PLATFORMS:
 		return None
 
+	conf["type"] = name
+
 	return __PLATFORMS[name](conf)
