@@ -20,8 +20,6 @@
 ###############################################################################
 
 class CommmandBuilder(object):
-	def __init__(self, conf):
-		self.conf = conf
 
 	def prepare(self, task):
 		raise Exception("Unimplemented")

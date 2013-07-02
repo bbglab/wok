@@ -25,10 +25,10 @@ import glob
 from wok.core.flow.reader import FlowReader
 
 class FlowLoader(object):
-	"""Represents a flow repository of flows.
-	It implements a cache for the previously readed flows"""
+	"""Represents a repository of flows.
+	It implements a cache for the previously read flows"""
 
-	def __init__(self, flow_path = None):
+	def __init__(self, flow_path=None):
 		self.__flow_path = flow_path
 
 		self.__flow_files = {}
@@ -40,7 +40,7 @@ class FlowLoader(object):
 	def __initialize(self):
 		for path in self.__flow_path:
 			if not os.path.exists(path):
-				raise Exception("Path not found: {}".format(path))
+				raise Exception("Flow path not found: {}".format(path))
 
 			files = None
 			if os.path.isdir(path):
@@ -99,9 +99,11 @@ class FlowLoader(object):
 	def load_from_ref(self, ref):
 		return self.load_from_uri(ref.uri)
 
-	def load_from_canonical(self, canonical_name, version = None):
+	def load_from_canonical(self, canonical_name, version=None):
 		if version is not None:
 			uri = "{}/{}".format(canonical_name, version)
+		else:
+			uri = canonical_name
 		return self.load_from_uri(uri)
 
 	def load_from_uri(self, uri):
@@ -111,7 +113,7 @@ class FlowLoader(object):
 		if uri in self.__flow_files:
 			reader = FlowReader(self.__flow_files[uri][0])
 			flow = reader.read()
-			self.__flow_cache[flow] = flow
+			self.__flow_cache[uri] = flow
 			return flow
 
 		raise Exception("Flow not found: {}".format(uri))

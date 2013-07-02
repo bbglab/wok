@@ -78,7 +78,7 @@ class ModelNode(Node):
 
 class BaseModuleNode(ModelNode):
 
-	def __init__(self, instance, parent, model, namespace = ""):
+	def __init__(self, instance, parent, model, namespace=""):
 		ModelNode.__init__(self, parent, model, namespace)
 
 		self.instance = instance
@@ -277,7 +277,7 @@ class BaseModuleNode(ModelNode):
 		return level
 
 class FlowNode(BaseModuleNode):
-	def __init__(self, instance, parent, model, namespace = ""):
+	def __init__(self, instance, parent, model, namespace=""):
 		BaseModuleNode.__init__(self, instance, parent, model, namespace)
 
 		# number of modules of each state {<state, count>}
@@ -369,7 +369,7 @@ class FlowNode(BaseModuleNode):
 		return e
 
 class LeafModuleNode(BaseModuleNode):
-	def __init__(self, instance, parent, model, namespace = ""):
+	def __init__(self, instance, parent, model, namespace=""):
 		BaseModuleNode.__init__(self, instance, parent, model, namespace)
 
 		self.tasks = []
@@ -428,7 +428,7 @@ class LeafModuleNode(BaseModuleNode):
 
 class TaskNode(Node):
 	def __init__(self, parent, index):
-		Node.__init__(self, parent, namespace = "")
+		Node.__init__(self, parent, namespace="")
 
 		self.index = index
 
@@ -466,7 +466,7 @@ class TaskNode(Node):
 		return self.parent.expanded_conf
 
 class PortNode(ModelNode):
-	def __init__(self, parent, model, namespace = ""):
+	def __init__(self, parent, model, namespace=""):
 		ModelNode.__init__(self, parent, model, namespace)
 
 		self.data = None

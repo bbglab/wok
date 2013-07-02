@@ -44,7 +44,7 @@ def initialize(conf = None):
 		format = conf["format"]
 	else:
 		#format = "%(asctime)s %(module)s %(funcName)s %(name)s %(levelname) -5s : %(message)s"
-		format = "%(asctime)s %(name)s %(levelname)-5s : %(message)s"
+		format = "%(asctime)s %(name)-20s [%(levelname)-5s] %(message)s"
 
 	#, datefmt="%Y-%m-%d %H:%M:%S:%f"
 	logging.basicConfig(format = format)
@@ -57,7 +57,7 @@ def get_level(level):
 
 	return _log_level_map[level]
 
-def get_logger(name = None, level = "info", conf = None):
+def get_logger(name=None, level=None, conf=None):
 	"""
 	Returns a logger.
 
@@ -79,14 +79,16 @@ def get_logger(name = None, level = "info", conf = None):
 			name = conf["name"]
 
 	log_level = level
+
 	if "level" in conf:
 		log_level = conf["level"].lower()
 		if log_level not in _log_level_map:
 			log_level = "notset"
 
-	level = _log_level_map[log_level]
-
 	log = logging.getLogger(name)
-	log.setLevel(level)
+
+	if log_level is not None:
+		level = _log_level_map[log_level]
+		log.setLevel(level)
 	
 	return log

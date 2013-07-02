@@ -27,7 +27,8 @@ import logging
 from datetime import datetime, timedelta
 
 from wok import logger
-from wok.config.data import DataElement, DataList
+from wok.config import ConfigBuilder
+from wok.config.data import Data
 from wok.core import runstates
 from wok.core.utils.sync import synchronized
 from wok.core.utils.sync import Synchronizable
@@ -40,10 +41,7 @@ class Instance(object):
 
 	_INDENT = "  "
 
-	def __init__(self, engine, name, conf_builder, flow_file):
-		self.engine = engine
-		self._storage = engine.storage
-
+	def __init__(self, name, conf_builder, flow_uri, engine, platform):
 		self.name = name
 		self.title = name
 
@@ -51,11 +49,18 @@ class Instance(object):
 		self.running_time = timedelta()
 		
 		self.conf = None
-		self.conf_builder = conf_builder
+		self.conf_builder = ConfigBuilder()
+		self.conf_builder.add_value("wok.__instance.name", name)
+		self.conf_builder.add_builder(conf_builder)
 
 		self.flows = []
-		self.flow_file = flow_file
+		self.flow_uri = flow_uri
 		self.root_flow = None
+
+		self.engine = engine
+		self.platform = platform
+
+		self._storage = engine.storage # DEPRECATED
 
 		self._state = runstates.READY
 
@@ -66,32 +71,26 @@ class Instance(object):
 	
 	def initialize(self):
 		self.conf = self.conf_builder()
-		
-		if "wok.instance" in self.conf:
-			inst_conf = self.conf["wok.instance"]
-		else:
-			inst_conf = DataElement()
+
+		inst_conf = self.conf.get("wok.instance", default=Data.element)
 
 		inst_conf["name"] = self.name
 		
-		if "title" in inst_conf:
-			self.title = inst_conf["title"]
+		self.title = inst_conf.get("title")
 
-		self._log = logger.get_logger("wok.instance", conf=self.engine.conf.get("log"))
+		self._log = logger.get_logger("wok.instance")
 
-		self.root_flow = self.engine.flow_loader.load_from_file(self.flow_file)
+		self.root_flow = self.engine.projects.load_flow(self.flow_uri)
 
 		# self._log.debug("\n" + repr(self.root_flow))
 
 		inst_conf.element("flow", dict(
 			name=self.root_flow.name,
-			path=os.path.dirname(os.path.abspath(self.flow_file)),
-			file=os.path.basename(self.flow_file)))
+			uri=self.flow_uri))
+			#path=os.path.dirname(os.path.abspath(self.flow_uri)),
+			#file=os.path.basename(self.flow_uri)))
 
-		if "modules" in inst_conf:
-			self._mod_conf_rules = inst_conf["module_rules"]
-		else:
-			self._mod_conf_rules = DataElement()
+		self._mod_conf_rules = inst_conf.get("mod_rules", default=Data.element)
 
 		# reset state
 		self._state = runstates.READY
@@ -109,6 +108,10 @@ class Instance(object):
 		# TODO self._save_initial_state()
 
 		#self._log.debug("Flow node tree:\n" + repr(self.root_node))
+
+	@property
+	def project(self):
+		return self.root_flow.project
 
 	@property
 	def state(self):
@@ -217,7 +220,7 @@ class Instance(object):
 			ovr_mod.wsize = mode_def.wsize
 		if src_mod.conf is not None:
 			if ovr_mod.conf is None:
-				ovr_mod.conf = DataElement()
+				ovr_mod.conf = Data.element()
 			ovr_mod.conf.merge(mode_def.conf)
 
 		ovr_mod.priority = src_mod.priority
@@ -258,8 +261,8 @@ class Instance(object):
 		linked_ports = []
 		linked_by = {}
 
-		self._explore_ports(self.root_node, self.root_node.name, modules_by_id,
-							ports_by_id, source_ports, linked_ports, linked_by)
+		self._explore_ports(self.root_node, self.root_node.name,
+							modules_by_id, ports_by_id, source_ports, linked_ports, linked_by)
 
 		self._link_ports(ports_by_id, source_ports, linked_ports, linked_by)
 
@@ -485,9 +488,9 @@ class Instance(object):
 			names_are_strings = [isinstance(a, basestring) for a in names]
 			if isinstance(names, basestring):
 				names = [names]
-			elif not isinstance(names, (list, DataList)) \
+			elif not Data.is_list(names) \
 					or not reduce(lambda x,y: x and y, names_are_strings):
-				self._log.error("wok.modules[*].name must be a string or a list of strings")
+				self._log.error("wok.instance.mod_rules[*].name must be a string or a list of strings")
 				continue
 			m = None
 			for name in names:
@@ -504,7 +507,8 @@ class Instance(object):
 					for entry in rule["conf"]:
 						mnode.conf[entry[0]] = entry[1]
 
-	def schedule_tasks(self):
+	# TODO make it an iterator
+	def schedule(self):
 		"""
 		Schedule tasks ready for being submitted.
 		:return: list of task nodes.
@@ -516,27 +520,37 @@ class Instance(object):
 		tasks = []
 		require_rescheduling = True
 		while require_rescheduling:
-			require_rescheduling, tasks = self._schedule_module_tasks(self.root_node, tasks)
+			require_rescheduling, tasks = self._schedule_module(self.root_node, tasks)
 		return tasks
 
-	def _schedule_module_tasks(self, module, tasks):
+	def _create_module_data(self, module):
+		provider = self.platform.data
+		for port in module.out_ports:
+			provider.remove_port_data(port)
+		provider.save_module(module)
+
+	# TODO it is not required to return the tasks list as it is already a mutable input parameter
+	def _schedule_module(self, module, tasks):
 		require_rescheduling = False
 		if module.state == runstates.PAUSED:
 			return (require_rescheduling, tasks)
 
-		#self._log.debug("schedule_tasks(%s)" % module.id)
+		#self._log.debug("schedule(%s)" % module.id)
 		
 		if module.is_leaf_module:
 			if module.state == runstates.READY and len(module.waiting) == 0:
+				# Save module descriptor into the data provider and remove previous port data
+				self._create_module_data(module)
+
+				# Partition data stream
 				module.tasks = self._partition_module(module)
 				if len(module.tasks) == 0:
 					self.change_module_state(module, runstates.FINISHED)
 					require_rescheduling = True
 					#self._log.debug("FINISHED: {}".format(repr(module)))
 				else:
-					#TODO self._storage.remove_task(task) ???
 					for task in module.tasks:
-						self._storage.save_task_config(task)
+						self.platform.data.save_task(task)
 
 					tasks += module.tasks
 					self.change_module_state(module, runstates.WAITING)
@@ -550,10 +564,10 @@ class Instance(object):
 			#TODO elif module.state == runstates.FAILED and retrying:
 		else:
 			for m in module.modules:
-				req_resch, tasks = self._schedule_module_tasks(m, tasks)
+				req_resch, tasks = self._schedule_module(m, tasks)
 				require_rescheduling |= req_resch
 
-			self.update_module_state_from_children(module, recursive = False)
+			self.update_module_state_from_children(module, recursive=False)
 
 		return (require_rescheduling, tasks)
 
@@ -573,7 +587,7 @@ class Instance(object):
 
 		if len(psizes) == 0:
 			# Submit a task for the module without input ports information
-			task = TaskNode(parent = module, index = 0)
+			task = TaskNode(parent=module, index=0)
 			tasks += [task]
 
 			for port in module.out_ports:
@@ -857,7 +871,7 @@ class Instance(object):
 
 	def to_element(self, e = None):
 		if e is None:
-			e = DataElement()
+			e = Data.element()
 
 		e["name"] = self.name
 		e["state"] = str(self.state)

@@ -4,8 +4,9 @@ from datetime import datetime
 
 from wok import logger
 from wok.core import runstates
+from wok.core import events
 from wok.core.errors import ConfigMissingError
-
+from wok.core.callback import CallbackManager
 from wok.jobs.db import create_db, Session, Job, JobResults
 
 class JobManager(object):
@@ -17,7 +18,7 @@ class JobManager(object):
 	    **work_path**: Working path for temporary files and databases.
 	"""
 
-	EVENT_JOB_UPDATE = "job_update"
+	job_class = Job
 
 	def __init__(self, name, conf):
 		self._name = name
@@ -35,7 +36,7 @@ class JobManager(object):
 		db_path = os.path.join(self._work_path, "jobs.db")
 		self._db = create_db("sqlite:///{}".format(db_path))
 
-		self._listeners = set()
+		self._callbacks = CallbackManager(valid_events=[events.JOB_UPDATE])
 
 		# Lock for database jobs state changes
 		self._qlock = threading.Lock()
@@ -43,20 +44,16 @@ class JobManager(object):
 	def _create_session(self):
 		return Session()
 
-	def _job_class(self):
-		return Job
-
-	def _notify(self, event, **kargs):
-		for listener in self._listeners:
-			listener(event, **kargs)
+	@property
+	def callbacks(self):
+		return self._callbacks
 
 	def _fire_job_updated(self, job):
-		self._notify(self.EVENT_JOB_UPDATE, job_id=job.id, task_id=job.task_id, state=job.state)
+		self._callbacks.fire(events.JOB_UPDATE, job_id=job.id, task_id=job.task_id, state=job.state)
 
 	def _get_job(self, job_id):
 		session = self._create_session()
-		job_class = self._job_class()
-		job = session.query(job_class).filter(job_class.id == job_id).first()
+		job = session.query(self.job_class).filter(self.job_class.id == job_id).first()
 		session.close()
 		return job
 
@@ -66,13 +63,13 @@ class JobManager(object):
 			key = "{}.{}".format(context, key)
 		return task_conf.get(key, default)
 
-	def add_listener(self, listener):
+	def add_callback(self, event, callback):
 		"""
-		Adds an event listener. For example whenever there are job state changes it will be called.
-		:param listener: callee accepting the following parameters: event, **kargs
+		Adds an event callback. For example whenever there are job state changes it will be called.
+		:param callback: callee accepting the following parameters: event, **kargs
 		:return:
 		"""
-		self._listeners.add(listener)
+		self._callbacks[event].add(callback)
 
 	def start(self):
 		"Start the job manager."
@@ -95,16 +92,8 @@ class JobManager(object):
 
 		session = self._create_session()
 		try:
-			job_class = self._job_class()
-
 			for js in submissions:
-				job = job_class()
-				job.task_id = js.task_id
-				job.task_conf = js.task_conf
-				job.priority = js.priority
-				job.state = runstates.WAITING
-				job.created = datetime.now()
-				job.cmd, job.args, job.env = js.cmd, js.args, js.env
+				job = self.job_class(js)
 				self._submit(job)
 				session.add(job)
 				session.commit()
@@ -120,10 +109,9 @@ class JobManager(object):
 		"""
 
 		session = self._create_session()
-		job_class = self._job_class()
-		query = session.query(job_class.id, job_class.state)
+		query = session.query(self.job_class.id, self.job_class.state)
 		if job_ids is not None:
-			query = query.filter(job_class.state.in_(job_ids))
+			query = query.filter(self.job_class.state.in_(job_ids))
 		for job_id, job_state in query:
 			yield job_id, job_state
 		session.close()
@@ -134,6 +122,8 @@ class JobManager(object):
 		job = self._get_job(job_id)
 		if job is None:
 			return None
+
+		self._log.debug("Retrieving output for job [{}] {} ...".format(job.id, job.task_id))
 
 		return self._output(job)
 
@@ -147,13 +137,13 @@ class JobManager(object):
 		"Retrieve the job results and delete the job from memory."
 
 		session = self._create_session()
-		job_class = self._job_class()
-
-		job = session.query(job_class).filter(job_class.id == job_id).first()
+		job = session.query(self.job_class).filter(self.job_class.id == job_id).first()
 
 		if job is None:
 			session.close()
 			return
+
+		self._log.debug("Joining job [{}] {} ...".format(job.id, job.task_id))
 
 		self._join(session, job)
 
@@ -163,11 +153,6 @@ class JobManager(object):
 
 		return JobResults(job)
 
-	def join_all(self, job_ids=None):
-		"Retrieve the jobs results and delete them from memory."
-
-		raise Exception("Abstract method unimplemented")
-
 	def _abort(self, session, job):
 		pass
 
@@ -176,13 +161,14 @@ class JobManager(object):
 
 		with self._qlock:
 			session = self._create_session()
-			job_class = self._job_class()
 
-			job = session.query(job_class).filter(job_class.id == job_id).first()
+			job = session.query(self.job_class).filter(self.job_class.id == job_id).first()
 
 			if job is None:
 				session.close()
 				return
+
+			self._log.debug("Aborting job [{}] {} ...".format(job.id, job.task_id))
 
 			job.state = runstates.ABORTING
 			session.commit()
@@ -197,16 +183,15 @@ class JobManager(object):
 		self._log.info("Closing '{}' job manager ...".format(self._name))
 
 		session = self._create_session()
-		job_class = self._job_class()
 
 		with self._qlock:
-			session.query(job_class).filter(job_class.state == runstates.WAITING)\
-				.update({job_class.state : runstates.ABORTED}, synchronize_session=False)
+			session.query(self.job_class).filter(self.job_class.state == runstates.WAITING)\
+				.update({self.job_class.state : runstates.ABORTED}, synchronize_session=False)
 			session.commit()
 
 		self._close()
 
-		session.query(job_class).delete() # FIXME remove this line when engine saves state
+		session.query(self.job_class).delete() # FIXME remove this line when engine saves state
 		session.commit()
 		session.close()
 

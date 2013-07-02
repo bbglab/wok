@@ -23,14 +23,14 @@ from native import NativeCommmandBuilder
 from wok.core.errors import UnknownCommandBuilder
 
 __CMD_BUILDERS = {
-	"native" : NativeCommmandBuilder
+	"native" : NativeCommmandBuilder()
 }
 
-def create_command_builder(name, conf):
+def create_command_builder(name):
 	if name is None:
 		name = "native"
 	
 	if name not in __CMD_BUILDERS:
 		raise UnknownCommandBuilder(name)
 
-	return __CMD_BUILDERS[name](conf)
+	return __CMD_BUILDERS[name]

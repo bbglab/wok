@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from sqlalchemy import Column, Integer, Float, String, Text, DateTime
 
 # Engine and Session ---------------------------------------
@@ -81,6 +83,7 @@ class Job(Base):
 	__tablename__ = "jobs"
 
 	id = Column(Integer, primary_key=True)
+	instance_id = Column(String)
 	task_id = Column(String)
 	task_conf = Column(Config)
 	priority = Column(Float)
@@ -88,23 +91,35 @@ class Job(Base):
 	created = Column(DateTime)
 	started = Column(DateTime)
 	finished = Column(DateTime)
-	cmd = Column(Text)
-	args = Column(JSON)
+	hosts = Column(String)
+	output = Column(String)
+	script = Column(Text)
 	env = Column(JSON)
 	exit_code = Column(ExitCode)
 	exit_message = Column(Text)
 	exception_trace = Column(Text)
 
-	#TODO execution_host
+	def __init__(self, js):
+		self.instance_id = js.instance_id
+		self.task_id = js.task_id
+		self.task_conf = js.task_conf
+		self.priority = js.priority
+		self.state = runstates.WAITING
+		self.created = datetime.now()
+		self.script = js.script
+		self.env = js.env
 
 	def __repr__(self):
-		sb = ["{}(id={},task_id={},state={}".format(self.__class__.__name__, self.id, self.task_id, self.state)]
+		sb = ["{}(id={},instance_id={},task_id={},state={}".format(self.__class__.__name__,
+																   self.id, self.instance_id, self.task_id, self.state)]
 		if self.created is not None:
 			sb += [",created={}".format(self.created)]
 		if self.started is not None:
 			sb += [",started={}".format(self.started)]
 		if self.finished is not None:
 			sb += [",finished={}".format(self.finished)]
+		if self.hosts is not None:
+			sb += [",hosts={}".format(self.hosts)]
 		if self.exit_code is not None:
 			sb += [",exit_code={}".format(self.exit_code)]
 		if self.exit_message is not None:
@@ -114,13 +129,14 @@ class Job(Base):
 		return "".join(sb + [")"])
 
 class JobSubmission(object):
-	def __init__(self, task=None, task_id=None, task_conf=None, priority=None, cmd=None, args=None, env=None):
+	def __init__(self, task=None, instance_id=None, task_id=None, task_conf=None,
+				 priority=None, script=None, env=None):
 		self.task = task
+		self.instance_id = instance_id
 		self.task_id = task_id
 		self.task_conf = task_conf
 		self.priority = priority
-		self.cmd = cmd
-		self.args = args
+		self.script = script
 		self.env = env
 
 from collections import namedtuple

@@ -23,11 +23,10 @@ import time
 from datetime import timedelta
 
 from wok import logger
+from wok.config.data import Data
 from wok.config.cli import OptionsConfig
 from wok.core import exit_codes
-from wok.task.port import create_port, PORT_MODE_IN, PORT_MODE_OUT
-from wok.core.storage import StorageContext
-from wok.core.storage.factory import create_storage
+from wok.data import create_data_provider, Stream, DataProvider
 
 class MissingRequiredPorts(Exception):
 	def __init__(self, missing_ports, mode):
@@ -46,37 +45,36 @@ class Task(object):
 
 		# Get task key and storage configuration
 		cmd_conf = OptionsConfig(required = ["instance_name", "module_path",
-											"task_index", "storage.type"])
+											"task_index", "data.type"])
 
 		instance_name = cmd_conf["instance_name"]
 		module_path = cmd_conf["module_path"]
 		task_index = cmd_conf["task_index"]
 
-		storage_conf = cmd_conf["storage"]
-		storage = create_storage(
-								storage_conf["type"],
-								StorageContext.EXECUTION,
-								storage_conf)
+		# initialize the data provider
+		provider_conf = cmd_conf["data"]
+		self._provider = create_data_provider(provider_conf["type"], provider_conf)
+		self._provider.start()
 
-		# Read data and configuration
-		self.data = storage.load_task_config(
-								instance_name, module_path, task_index)
+		# load the module and task descriptors
+		module_desc = self._provider.load_module(instance_name, module_path)
+		task_desc = self._provider.load_task(instance_name, module_path, task_index)
 
-		self.conf = self.data["conf"]
-		del self.data["conf"]
-
-		# set per task configuration values and expand
+		# setup task configuration
+		self.conf = Data.create(module_desc["conf"])
 		self.conf["__task_index"] = task_index
 		self.conf.expand_vars()
 
-		self.id = self.data["id"]
-		self.name = self.data["name"]
-		self.module_path = self.data["module"]
-		self.instance_name = self.data["instance"]
+		# setup task attributes
+		self.id = task_desc["id"]
+		self.name = task_desc["name"]
+		self.module_path = task_desc["module"]
+		self.instance_name = task_desc["instance"]
 		self.index = task_index
 
+		# initialize decorators
 		self._main = None
-		self._generators = []
+		self._sources = []
 		self._foreach = None
 		self._begin = None
 		self._end = None
@@ -84,32 +82,31 @@ class Task(object):
 		self._start_time = 0
 		self._end_time = self._start_time
 
+		# intialize task logging
 		log_conf = self.conf.get("log")
 		logger.initialize(log_conf)
 		self.logger = logger.get_logger(self.name, conf=log_conf)
 
-		# Initialize data iteration
-		iter_conf = self.data["iteration"]
-		self._iter_strategy = iter_conf.get("strategy")
-		self._iter_size = iter_conf.get("size", 0, dtype=int)
+		# Initialize input stream
+		self._stream = Stream(self._provider, module_desc["stream"])
 
 		# Initialize ports
-		self._port_map = {}
+		self._ports = {}
 		self._in_ports = []
 		self._out_ports = []
 
-		if "ports" in self.data:
-			ports_conf = self.data["ports"]
+		if "ports" in module_desc:
+			ports_conf = module_desc["ports"]
 
 			for port_conf in ports_conf.get("in", []):
-				port = create_port(PORT_MODE_IN, port_conf, storage)
-				self._port_map[port.name] = port
-				self._in_ports += [port]
+				port_conf["mode"] = DataProvider.PORT_MODE_IN
+				self._ports[port_conf["name"]] = port_conf
+				self._in_ports += [port_conf]
 
 			for port_conf in ports_conf.get("out", []):
-				port = create_port(PORT_MODE_OUT, port_conf, storage)
-				self._port_map[port.name] = port
-				self._out_ports += [port]
+				port_conf["mode"] = DataProvider.PORT_MODE_OUT
+				self._ports[port_conf["name"]] = port_conf
+				self._out_ports += [port_conf]
 
 		# The context field is free to be used by the task user to
 		# save variables related with the whole task life cycle.
@@ -117,12 +114,6 @@ class Task(object):
 		# overwrote with any value by the user. Wok will never use it.
 		self.context = {}
 		
-		#self.logger.debug("Task:\nData: %s\nConfiguration: %s" % (self.data, self.conf))
-		
-	def __close_ports(self):
-		for port in self._port_map.values():
-			port.close()
-
 	@staticmethod
 	def __dot_product(ports):
 		names = [port.name for port in ports]
@@ -148,20 +139,20 @@ class Task(object):
 			self.logger.debug("Running [begin] ...")
 			self._begin()
 
-		## Execute generators
+		## Execute sources
 
-		if self._generators:
-			self.logger.debug("Running [generators] ...")
+		if self._sources:
+			self.logger.debug("Running [sources] ...")
 
-		for generator in self._generators:
-			func, out_ports = generator
+		for source in self._sources:
+			func, out_ports = source
 
 			self.logger.debug("".join([func.__name__,
-				"(out_ports=[", ", ".join([p.name for p in out_ports]), "])"]))
+				"(out_ports=[", ", ".join([p["name"] for p in out_ports]), "])"]))
 
-			params = [port for port in out_ports]
+			out_ports = self.ports(*[p["name"] for p in out_ports], mode=DataProvider.PORT_MODE_OUT, iterable=True)
 
-			func(*params)
+			func(*out_ports)
 
 		## Execute foreach's
 
@@ -227,47 +218,70 @@ class Task(object):
 
 		return 0
 
+	def __open_port_data(self, port_desc):
+		return self._provider.open_port_data(self.instance_name, self.module_path, self.index,
+											 port_desc["name"], port_desc["mode"])
+
+	def __ports(self, names=None, mode=None):
+		"""
+		Return port descriptors by their name.
+		"""
+
+		mode = mode or set([DataProvider.PORT_MODE_IN, DataProvider.PORT_MODE_OUT])
+		if not isinstance(mode, (list, set)):
+			mode = set([mode])
+		if not isinstance(mode, set):
+			mode = set(mode)
+
+		if names is None or len(names) == 0:
+			port_descriptors = []
+			if DataProvider.PORT_MODE_IN in mode:
+				port_descriptors += self._in_ports
+			if DataProvider.PORT_MODE_OUT in mode:
+				port_descriptors += self._out_ports
+		else:
+			port_descriptors = []
+			for name in names:
+				if name not in self._ports:
+					raise Exception("Unknown port: {}".format(name))
+
+				port_desc = self._ports[name]
+
+				if port_desc["mode"] not in mode:
+					raise Exception("Incompatible port mode {} for port {}".format(mode, name))
+
+				port_descriptors += [port_desc]
+
+		return port_descriptors
+
 	def elapsed_time(self):
-		"Return the elapsed time since the begining of the task"
-		return timedelta(seconds = time.time() - self._start_time)
+		"Return the elapsed time since the beginning of the task"
+		return timedelta(seconds=time.time() - self._start_time)
 
 	def ports(self, *args, **kargs):
 		"""
-		Return ports by their name. Example:
+		Return ports by their name.	Example:
 		
 			a, b, c = task.ports("a", "b", "c")
+
+		:param mode: Restring the search to ports of this mode.
+		:param iterable: Force that the results be iterable either when only one port is requested. Default *False*.
+		:return The port data if only one port is requested or a tuple of port data if more than one are requested.
 		"""
 
-		if "mode" in kargs:
-			mode = [kargs["mode"]]
-		else:
-			mode = [PORT_MODE_IN, PORT_MODE_OUT]
+		mode = kargs.get("mode", None)
+		iterable = kargs.get("iterable", False)
 
-		if args is None or len(args) == 0:
-			ports = []
-			if PORT_MODE_IN in mode:
-				ports += self._in_ports
-			if PORT_MODE_OUT in mode:
-				ports += self._out_ports
-		else:
-			names = []
-			for arg in args:
-				if isinstance(arg, list):
-					names += arg
-				else:
-					names += [arg]
+		port_descriptors = self.__ports(args, mode=mode)
 
-			try:
-				ports = [self._port_map[name] for name in names]
-			except Exception as e:
-				raise Exception("Unknown port: {0}".format(e.args[0]))
+		ports = [self.__open_port_data(port_desc) for port_desc in port_descriptors]
 
-		if len(ports) == 1:
+		if len(ports) == 1 and not iterable:
 			return ports[0]
 		else:
 			return tuple(ports)
 
-	def check_conf(self, keys, exit_on_error = True):
+	def check_conf(self, keys, exit_on_error=True):
 		"""
 		Check configuration parameters and return missing keys.
 
@@ -285,7 +299,7 @@ class Task(object):
 		return missing_keys
 
 	def run(self):
-		"Start the task execution"
+		"Start the task execution. Remember to call this function at the end of the script !"
 		try:
 			import socket
 			hostname = socket.gethostname()
@@ -310,7 +324,7 @@ class Task(object):
 			self.logger.exception("Exception on task {0}".format(self.id))
 			retcode = exit_codes.TASK_EXCEPTION
 		finally:
-			self.__close_ports()
+			self._provider.close()
 
 		exit(retcode)
 		
@@ -333,52 +347,67 @@ class Task(object):
 
 		return decorator
 
-	def add_generator(self, generator_func, out_ports = None):
-		"""Add a port data generator function"""
+	def add_source(self, source_func, out_ports=None):
+		"""Add a port data source function"""
 		if out_ports is None:
-			ports = self.ports(mode = PORT_MODE_OUT)
+			ports = self.__ports(mode=DataProvider.PORT_MODE_OUT)
 		else:
-			ports = self.ports(out_ports, mode = PORT_MODE_OUT)
+			ports = self.__ports(out_ports, mode=DataProvider.PORT_MODE_OUT)
 		if not isinstance(ports, (tuple, list)):
 			ports = (ports,)
-		self._generators += [(generator_func, ports)]
+		self._sources += [(source_func, ports)]
 
-	def generator(self, out_ports = None):
+	def source(self, *args, **kwargs):
 		"""
 		A decorator that is used to define a function that will
 		generate port output data. Example::
 
-			@task.generator(out_ports = ["x", "sum"])
+			@task.source(out_ports=["x", "sum"])
 			def sum_n(x, sum):
 				N = task.conf["N"]
 				s = 0
 				for i in xrange(N):
-					x.write(i)
-					sum.write(s)
+					x.send(i)
+					sum.send(s)
 					s += i
 		"""
 		def decorator(f):
-			self.add_generator(f, out_ports)
+			self.add_source(f, **kwargs)
 			return f
+
+		"""
+		def wrap(f):
+			def wrapped(out_ports):
+				self.add_source(f, out_ports)
+			return wrapped
+		return wrap
+		"""
+
+		import types
+		if len(args) == 1 and type(args[0]) in [types.FunctionType, types.MethodType]:
+			self.add_source(f)
+			return args[0]
+		else:
+			return decorator
 		return decorator
 
-	def set_foreach(self, processor_func, in_ports = None, out_ports = None):
+	def set_foreach(self, processor_func, in_ports=None, out_ports=None):
 		"""Set the port data processing function"""
 		if in_ports is None:
-			iports = self.ports(mode = PORT_MODE_IN)
+			iports = self.__ports(mode=DataProvider.PORT_MODE_IN)
 		else:
-			iports = self.ports(in_ports, mode = PORT_MODE_IN)
+			iports = self.__ports(in_ports, mode=DataProvider.PORT_MODE_IN)
 		if not isinstance(iports, (tuple, list)):
 			iports = (iports,)
 		if out_ports is None:
-			oports = self.ports(mode = PORT_MODE_OUT)
+			oports = self.__ports(mode=DataProvider.PORT_MODE_OUT)
 		else:
-			oports = self.ports(out_ports, mode = PORT_MODE_OUT)
+			oports = self.__ports(out_ports, mode=DataProvider.PORT_MODE_OUT)
 		if not isinstance(oports, (tuple, list)):
 			oports = (oports,)
 		self._foreach = (processor_func, iports, oports)
 
-	def foreach(self, in_ports = None, out_ports = None):
+	def foreach(self, in_ports=None, out_ports=None):
 		"""
 		A decorator that is used to specify which is the function that will
 		process each port input data. Example::

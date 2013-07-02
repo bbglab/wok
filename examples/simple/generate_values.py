@@ -1,6 +1,6 @@
 from wok.task import task
 
-@task.generator()
+@task.source()
 def sequence(x_port):
 	N = task.conf.get("N", 10, dtype=int)
 

@@ -31,15 +31,16 @@ from wok.config import COMMAND_CONF
 from wok.config.data import Data, DataList
 from wok.config.cli import ConfigBuilder
 from wok.core import runstates
+from wok.core import events
 from wok.core.utils.sync import Synchronizable, synchronized
 from wok.core.utils.logs import parse_log
 from wok.core.flow.loader import FlowLoader
+from wok.core.projects import ProjectManager
 from wok.core.storage import StorageContext
 from wok.core.storage.factory import create_storage
 from wok.platform.factory import create_platform
 from wok.jobs import JobSubmission
 from wok.jobs import create_job_manager
-from wok.core.cmd import create_command_builder
 
 from instance import Instance, SynchronizedInstance
 
@@ -56,7 +57,7 @@ class WokEngine(Synchronizable):
 
 		self._conf = wok_conf = conf["wok"]
 
-		self._log = logger.get_logger("wok.engine", conf = wok_conf.get("log"))
+		self._log = logger.get_logger("wok.engine", conf=wok_conf.get("log"))
 
 		self._work_path = wok_conf.get("work_path", os.path.join(os.getcwd(), "wok"))
 		if not os.path.exists(self._work_path):
@@ -70,11 +71,13 @@ class WokEngine(Synchronizable):
 		elif not isinstance(self._flow_path, (list, DataList)):
 			raise Exception('wok.flow_path: A list of paths expected. Example ["path1", "path2"]')
 
+		"""
 		self._flow_loader = FlowLoader(self._flow_path)
 		sb = ["wok.flow_path:\n"]
 		for uri, ff in self._flow_loader.flow_files.items():
 			sb += ["\t", uri, "\t", ff[0], "\n"]
 		self._log.debug("".join(sb))
+		"""
 
 		self._instances = []
 		self._instances_map = {}
@@ -103,9 +106,12 @@ class WokEngine(Synchronizable):
 		#self._db = create_db("sqlite:///{}".format(db_path))
 
 		self._platform = self._create_platform()
-		self._job_manager = self._create_job_manager()
+		#self._job_manager = self._create_job_manager()
 
 		self._storage = self._create_storage(wok_conf)
+
+		self._projects = ProjectManager(self._conf.get("projects"))
+		self._projects.initialize()
 
 		self._restore_state()
 
@@ -132,6 +138,7 @@ class WokEngine(Synchronizable):
 
 		return create_platform(name, conf)
 
+	'''
 	def _create_job_manager(self):
 		"""
 		Creates the job manager according to the configuration
@@ -154,6 +161,7 @@ class WokEngine(Synchronizable):
 		self._log.debug("Job manager configuration: {}".format(repr(conf)))
 
 		return create_job_manager(name, conf)
+	'''
 
 	@staticmethod
 	def _create_storage(wok_conf):
@@ -203,34 +211,6 @@ class WokEngine(Synchronizable):
 					timeout += 1
 		return msg_batch
 
-	def __prepare_cmd(self, task):
-		task_conf = task.conf
-		execution = task.parent.execution
-
-		exec_mode = execution.mode
-
-		exec_conf = task_conf.get(COMMAND_CONF)
-		if exec_conf is None:
-			exec_conf = Data.element()
-
-		exec_conf_key = "{}.{}".format(COMMAND_CONF, exec_mode)
-		if exec_conf_key in task_conf:
-			exec_conf.merge(task_conf[exec_conf_key])
-
-		cmd_builder = create_command_builder(exec_mode, exec_conf)
-
-		cmd, args, env = cmd_builder.prepare(task)
-
-		return cmd, args, env
-
-	def __job_submissions(self, tasks):
-		for task in tasks:
-			js = JobSubmission(
-				task=task, task_id=task.id, task_conf=task.conf,
-				priority=max(min(task.priority, 1), 0))
-			js.cmd, js.args, js.env = self.__prepare_cmd(task)
-			yield js
-
 	# threads ----------------------
 
 	@synchronized
@@ -265,9 +245,9 @@ class WokEngine(Synchronizable):
 
 				# submit tasks ready to be executed
 				for inst in self._instances:
-					tasks = inst.schedule_tasks()
-					submissions = self.__job_submissions(tasks)
-					for js, job_id in self._job_manager.submit(submissions):
+					tasks = inst.schedule()
+					#submissions = self.__job_submissions(tasks)
+					for js, job_id in self._platform.submit(tasks):
 						self._job_task_map[job_id] = js.task
 				
 				#_log.debug("Waiting for events ...")
@@ -291,14 +271,14 @@ class WokEngine(Synchronizable):
 							else:
 								_log.info("Stopping {} jobs for instance {} ...".format(len(job_ids), inst.name))
 								self._stopping_instances[inst] = set(job_ids)
-								self._job_manager.abort(job_ids)
+								self._platform.jobs.abort(job_ids)
 
 				#_log.debug("Checking job state changes ...")
 
 				updated_modules = set()
 
 				# detect tasks which state has changed
-				for job_id, state in self._job_manager.state():
+				for job_id, state in self._platform.jobs.state():
 					task = self._job_task_map[job_id]
 					if task.state != state:
 						task.state = state
@@ -380,7 +360,7 @@ class WokEngine(Synchronizable):
 				_log.debug("Reading logs for task %s ..." % task.id)
 
 				task.state_msg = "Reading logs"
-				output = self._job_manager.output(job_id)
+				output = self._platform.jobs.output(job_id)
 				if output is None:
 					output = StringIO.StringIO()
 
@@ -443,7 +423,7 @@ class WokEngine(Synchronizable):
 
 				#_log.debug("Joining task %s ..." % task.id)
 				with self._lock:
-					task.job_result = self._job_manager.join(job_id)
+					task.job_result = self._platform.jobs.join(job_id)
 					del self._job_task_map[job_id]
 					task.state_msg = ""
 
@@ -482,27 +462,33 @@ class WokEngine(Synchronizable):
 	@property
 	def work_path(self):
 		return self._work_path
-	
-	@property
-	def job_manager(self):
-		return self._job_manager
 
 	@property
 	def storage(self):
 		return self._storage
-	
+
+	@property
+	def projects(self):
+		return self._projects
+
+	"""
 	@property
 	def flow_loader(self):
 		return self._flow_loader
+	"""
 
 	@synchronized
 	def start(self, wait=True, single_run=False):
 		self._log.info("Starting engine ...")
 
 		self._platform.start()
+		self._platform.callbacks.add(events.JOB_UPDATE, self._on_job_update)
 
-		self._job_manager.start()
-		self._job_manager.add_listener(self._on_job_update)
+		#self._job_manager.start()
+		#self._job_manager.add_callback(self._on_job_update)
+
+		for project in self._projects:
+			self._platform.sync_project(project)
 
 		self._single_run = single_run
 		
@@ -566,7 +552,7 @@ class WokEngine(Synchronizable):
 
 		self._lock.release()
 
-		self._job_manager.close()
+		#self._job_manager.close()
 
 		self._platform.close()
 
@@ -600,22 +586,17 @@ class WokEngine(Synchronizable):
 		return SynchronizedInstance(self, inst)
 
 	@synchronized
-	def create_instance(self, inst_name, conf_builder, flow_file):
+	def create_instance(self, inst_name, conf_builder, flow_uri):
 		"Creates a new workflow instance"
 
 		#TODO check in the db
 		if inst_name in self._instances_map:
 			raise Exception("Instance with this name already exists: {}".format(inst_name))
 
-		self._log.debug("Creating instance {} from {} ...".format(inst_name, flow_file))
-
-		cb = ConfigBuilder()
-		cb.add_value("wok.__instance.name", inst_name)
-		cb.add_value("wok.__instance.work_path", os.path.join(self._work_path, inst_name))
-		cb.add_builder(conf_builder)
+		self._log.debug("Creating instance {} from {} ...".format(inst_name, flow_uri))
 
 		# Create instance
-		inst = Instance(self, inst_name, cb, flow_file)
+		inst = Instance(inst_name, conf_builder, flow_uri, engine=self, platform=self._platform)
 		try:
 			# Initialize instance and register by name
 			inst.initialize()
@@ -628,7 +609,7 @@ class WokEngine(Synchronizable):
 
 			#TODO self._db.instance_persist(inst)
 		except:
-			self._log.error("Error while creating instance {} for the workflow {} with configuration {}".format(inst_name, flow_file, cb()))
+			self._log.error("Error while creating instance {} for the workflow {} with configuration {}".format(inst_name, flow_uri, cb()))
 			raise
 
 		self._log.debug("\n" + repr(inst))
@@ -642,6 +623,6 @@ class WokEngine(Synchronizable):
 			del self._instances_map[name]
 			self._instances.remove(inst)
 
-			self._job_manager.abort(job_ids=self._instance_job_ids(inst))
+			self._platform.jobs.abort(job_ids=self._instance_job_ids(inst))
 
 			self._storage.clean(inst)

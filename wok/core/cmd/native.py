@@ -25,14 +25,12 @@ from wok.config import COMMAND_CONF
 from wok.config.data import Data
 
 from cmd import CommmandBuilder
+from constants import FLOW_PATH, SCRIPT_PATH, MODULE_SCRIPT_PATH
 from wok.core.errors import MissingValueError, LanguageError
 
 
 class NativeCommmandBuilder(CommmandBuilder):
-	def __init__(self, conf):
-		CommmandBuilder.__init__(self, conf)
-
-	def _storage_conf(self, value, path=None):
+	def _plain_conf(self, value, path=None):
 		if path is None:
 			path = []
 
@@ -40,7 +38,7 @@ class NativeCommmandBuilder(CommmandBuilder):
 			yield (".".join(path), value)
 		else:
 			for key in value.keys():
-				for k, v in self._storage_conf(value[key], path + [key]):
+				for k, v in self._plain_conf(value[key], path + [key]):
 					yield (k, v)
 
 	def prepare(self, task):
@@ -70,9 +68,13 @@ class NativeCommmandBuilder(CommmandBuilder):
 		env.merge(cmd_conf.get("{}.env".format(lang)))
 		env.merge(exec_conf.get("env"))
 
-		cmd = cmd_conf.get("shell.bin", "/bin/bash")
-		
-		args = []
+		# Default module script path
+		flow_path = os.path.abspath(os.path.dirname(task.parent.flow_path))
+		env[FLOW_PATH] = flow_path
+		env[SCRIPT_PATH] = script_path
+		env[MODULE_SCRIPT_PATH] = os.path.join(flow_path, script_path)
+
+		script = []
 		
 		default_sources = cmd_conf.get("default.source", default=Data.list)
 		if isinstance(default_sources, basestring):
@@ -83,28 +85,23 @@ class NativeCommmandBuilder(CommmandBuilder):
 			sources = Data.list([sources])
 
 		for source in default_sources + sources:
-			if len(args) != 0:
-				args += [";"]
-			args += ["source", source]
+			script += ["source {}".format(source)]
 	
 		if lang == "python":
-			if len(args) != 0:
-				args += [";"]
+			virtualenvs = cmd_conf.get("{}.virtualenv".format(lang), default=Data.list)
+			if isinstance(virtualenvs, basestring):
+				virtualenvs = Data.list([virtualenvs])
 
-			sources = cmd_conf.get("{}.virtualenv".format(lang), default=Data.list)
-			if isinstance(sources, basestring):
-				sources = Data.list([sources])
+			#script += ["set -x"]
+			for virtualenv in virtualenvs:
+				#script += ["echo Activating virtualenv {} ...".format(virtualenv)]
+				script += ["source '{}'".format(os.path.join(virtualenv, "bin", "activate"))]
+			#script += ["set +x"]
 
-			for source in sources:
-				if len(args) != 0:
-					args += [";"]
-				args += ["source", os.path.join(source, "bin", "activate")]
+			#script += ["echo Running task ..."]
 
-			if len(args) != 0:
-				args += [";"]
-
-			args += [cmd_conf.get("python.bin", "python")]
-			args += [self._task_absolute_path(task, script_path)]
+			cmd = [cmd_conf.get("python.bin", "python")]
+			cmd += [script_path if os.path.isabs(script_path) else "${}".format(MODULE_SCRIPT_PATH)]
 
 			lib_path = cmd_conf.get("python.lib_path")
 			if lib_path is not None:
@@ -118,21 +115,16 @@ class NativeCommmandBuilder(CommmandBuilder):
 		else:
 			raise LanguageError(lang)
 
-		args += ["-D", "instance_name={}".format(task.instance.name),
+		cmd += ["-D", "instance_name={}".format(task.instance.name),
 				"-D", "module_path={}".format(".".join([task.parent.namespace, task.parent.name])),
 				"-D", "task_index={}".format(task.index)]
 
-		for key, value in self._storage_conf(task.instance.engine.storage.basic_conf):
-			args += ["-D", "storage.{}={}".format(key, value)]
+		#for key, value in self._storage_conf(task.instance.engine.storage.basic_conf):
+		#	cmd += ["-D", "storage.{}={}".format(key, value)]
 
-		args = ["-c", " ".join(args)]
+		for key, value in self._plain_conf(Data.create(task.instance.platform.data.bootstrap_conf)):
+			cmd += ["-D", "data.{}={}".format(key, value)]
+
+		script += [" ".join(cmd)]
 		
-		return cmd, args, env.to_native()
-
-	@staticmethod
-	def _task_absolute_path(task, path):
-		if os.path.isabs(path):
-			return path
-
-		flow_path = os.path.dirname(task.parent.flow_path)
-		return os.path.abspath(os.path.join(flow_path, path))
+		return "\n".join(script), env.to_native()
