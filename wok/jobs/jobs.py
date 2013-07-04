@@ -9,6 +9,42 @@ from wok.core.errors import ConfigMissingError
 from wok.core.callback import CallbackManager
 from wok.jobs.db import create_db, Session, Job, JobResults
 
+import inspect
+# Class to wrap Lock and simplify logging of lock usage
+class LogLock(object):
+	"""
+	Wraps a standard Lock, so that attempts to use the
+	lock according to its API are logged for debugging purposes
+
+	"""
+	def __init__(self, name, log):
+		self.name = str(name)
+		self.log = log
+		self.lock = threading.Lock()
+		self.log.debug("<CREATED {} {}>".format(self.name, inspect.stack()[2][3]))
+
+	def acquire(self, blocking=True, l=1):
+		caller = inspect.stack()[l][3]
+		self.log.debug("<TRYING {} {}>".format(self.name, caller))
+		ret = self.lock.acquire(blocking)
+		if ret == True:
+			self.log.debug("<ACQUIRED {} {}>".format(self.name, caller))
+		else:
+			self.log.debug("<FAILED {} {}>".format(self.name, caller))
+		return ret
+
+	def release(self, l=1):
+		caller = inspect.stack()[l][3]
+		self.log.debug("<RELEASING {} {}>".format(self.name, caller))
+		self.lock.release()
+
+	def __enter__(self):
+		self.acquire(l=2)
+
+	def __exit__(self, exc_type, exc_val, exc_tb):
+		self.release(l=2)
+		return False # Do not swallow exceptions
+
 class JobManager(object):
 	"""
 	Base class for Job managers. It implements the main interface (start, submit, join, ...)
@@ -40,6 +76,7 @@ class JobManager(object):
 
 		# Lock for database jobs state changes
 		self._qlock = threading.Lock()
+		#self._qlock = LogLock("qlock", self._log)
 
 	def _create_session(self):
 		return Session()
@@ -90,16 +127,20 @@ class JobManager(object):
 		:return: Iterator of (job_submission, job_id) for all the tasks.
 		"""
 
-		session = self._create_session()
-		try:
-			for js in submissions:
-				job = self.job_class(js)
-				self._submit(job)
-				session.add(job)
-				session.commit()
-				yield js, job.id
-		finally:
-			session.close()
+		with self._qlock:
+			session = self._create_session()
+			try:
+				for js in submissions:
+					job = self.job_class(js)
+					self._submit(job)
+					session.add(job)
+					session.commit()
+					#session.flush()
+					self._qlock.release()
+					yield js, job.id
+					self._qlock.acquire()
+			finally:
+				session.close()
 
 	def state(self, job_ids=None):
 		"""
@@ -108,48 +149,47 @@ class JobManager(object):
 		:return: Iterator of (job_id, state)
 		"""
 
-		session = self._create_session()
-		query = session.query(self.job_class.id, self.job_class.state)
-		if job_ids is not None:
-			query = query.filter(self.job_class.state.in_(job_ids))
-		for job_id, job_state in query:
-			yield job_id, job_state
-		session.close()
+		with self._qlock:
+			session = self._create_session()
+			query = session.query(self.job_class.id, self.job_class.state)
+			if job_ids is not None:
+				query = query.filter(self.job_class.state.in_(job_ids))
+			for job_id, job_state in query:
+				self._qlock.release()
+				yield job_id, job_state
+				self._qlock.acquire()
+			session.close()
 
 	def output(self, job_id):
 		"Get the output of the job"
 
-		job = self._get_job(job_id)
-		if job is None:
-			return None
+		with self._qlock:
+			job = self._get_job(job_id)
+			if job is None:
+				return None
 
-		self._log.debug("Retrieving output for job [{}] {} ...".format(job.id, job.task_id))
+			self._log.debug("Retrieving output for job [{}] {} ...".format(job.id, job.task_id))
 
-		return self._output(job)
-
-	def job(self, job_id):
-		"""Returns a job by its id. A job can only be retrieved while
-		it has not been joined. Once joined the job structure is deleted."""
-
-		raise Exception("Abstract method unimplemented")
+			return self._output(job)
 
 	def join(self, job_id):
 		"Retrieve the job results and delete the job from memory."
 
-		session = self._create_session()
-		job = session.query(self.job_class).filter(self.job_class.id == job_id).first()
+		with self._qlock:
+			session = self._create_session()
+			job = session.query(self.job_class).filter(self.job_class.id == job_id).first()
 
-		if job is None:
+			if job is None:
+				session.close()
+				return
+
+			self._log.debug("Joining job [{}] {} ...".format(job.id, job.task_id))
+
+			self._join(session, job)
+
+			session.delete(job)
+			session.commit()
 			session.close()
-			return
-
-		self._log.debug("Joining job [{}] {} ...".format(job.id, job.task_id))
-
-		self._join(session, job)
-
-		session.delete(job)
-		session.commit()
-		session.close()
 
 		return JobResults(job)
 
@@ -173,23 +213,24 @@ class JobManager(object):
 			job.state = runstates.ABORTING
 			session.commit()
 
-		self._abort(session, job)
+			self._abort(session, job)
 
-		session.close()
+			session.close()
 
 	def close(self):
 		"Close the job manager and free resources."
 
 		self._log.info("Closing '{}' job manager ...".format(self._name))
 
-		session = self._create_session()
-
 		with self._qlock:
-			session.query(self.job_class).filter(self.job_class.state == runstates.WAITING)\
-				.update({self.job_class.state : runstates.ABORTED}, synchronize_session=False)
+			session = self._create_session()
+
+			session.query(self.job_class).filter(
+				self.job_class.state == runstates.WAITING).update(
+				{self.job_class.state : runstates.ABORTED}, synchronize_session=False)
 			session.commit()
 
-		self._close()
+			self._close()
 
 		session.query(self.job_class).delete() # FIXME remove this line when engine saves state
 		session.commit()

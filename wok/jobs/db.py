@@ -11,7 +11,7 @@ from sqlalchemy import create_engine
 Session = scoped_session(sessionmaker())
 
 def create_db(uri):
-	engine = create_engine(uri)
+	engine = create_engine(uri, connect_args=dict(timeout=6, check_same_thread=False))
 	Session.configure(bind=engine)
 	Base.metadata.create_all(engine)
 	return engine

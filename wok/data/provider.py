@@ -5,9 +5,6 @@ from stream import Stream
 
 class DataProvider(object):
 
-	PORT_MODE_IN = "in"
-	PORT_MODE_OUT = "out"
-
 	def __init__(self, name, conf):
 		self._name = name
 		self._conf = conf
@@ -16,12 +13,15 @@ class DataProvider(object):
 
 	# ------------------------------------------------------------------------------------------------------------------
 
-	def _port_element(self, port):
-		return dict(
+	def _port_element(self, port, skip_data=True):
+		e = dict(
 			name=port.name,
 			groupby="",
 			streams=["__default__"],
 			exclude=False)
+		if not skip_data:
+			e["data"] = port.data.to_native()
+		return e
 
 	def _module_element(self, module):
 		# ports
@@ -47,10 +47,22 @@ class DataProvider(object):
 		# TODO stream partition info
 		partition = dict()
 
+		in_ports = list()
+		for i, (port_name, port_data) in enumerate(task.in_port_data):
+			in_ports.append(dict(
+				name=port_name,
+				data=port_data.to_native()))
+
+		out_ports = list()
+		for i, (port_name, port_data) in enumerate(task.out_port_data):
+			out_ports.append(dict(
+				name=port_name,
+				data=port_data.to_native()))
+
 		return dict(
 			id=task.id, name=task.name, index=task.index,
 			module=task.parent.id, instance=task.instance.name,
-			partition=partition)
+			partition=partition, ports={"in" : in_ports, "out" : out_ports})
 
 	# API --------------------------------------------------------------------------------------------------------------
 
@@ -82,5 +94,3 @@ class DataProvider(object):
 	def load_task_result(self, instance_name, module_id, task_index):
 		raise UnimplementedError()
 
-	def open_port_data(self, instance_name, module_id, port_name):
-		raise UnimplementedError()

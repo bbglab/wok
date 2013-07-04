@@ -243,16 +243,19 @@ class WokEngine(Synchronizable):
 			try:
 				#_log.debug("Scheduling new tasks ...")
 
+				updated_modules = set()
+
 				# submit tasks ready to be executed
 				for inst in self._instances:
 					tasks = inst.schedule()
 					#submissions = self.__job_submissions(tasks)
 					for js, job_id in self._platform.submit(tasks):
 						self._job_task_map[job_id] = js.task
+						updated_modules.add(js.task.parent)
 				
 				#_log.debug("Waiting for events ...")
 
-				while not self._notified and self._running:
+				while len(updated_modules) == 0 and not self._notified and self._running:
 					self._cvar.wait(1)
 				self._notified = False
 
@@ -274,8 +277,6 @@ class WokEngine(Synchronizable):
 								self._platform.jobs.abort(job_ids)
 
 				#_log.debug("Checking job state changes ...")
-
-				updated_modules = set()
 
 				# detect tasks which state has changed
 				for job_id, state in self._platform.jobs.state():
@@ -492,7 +493,7 @@ class WokEngine(Synchronizable):
 
 		self._single_run = single_run
 		
-		self._run_thread = threading.Thread(target = self._run, name = "wok-engine-run")
+		self._run_thread = threading.Thread(target=self._run, name="wok-engine-run")
 		self._run_thread.start()
 
 		self._log.info("Engine started")
@@ -552,12 +553,10 @@ class WokEngine(Synchronizable):
 
 		self._lock.release()
 
-		#self._job_manager.close()
-
-		self._platform.close()
-
 		if self._run_thread is not None:
 			self._stop_threads()
+
+		self._platform.close()
 
 		self._lock.acquire()
 
@@ -609,7 +608,8 @@ class WokEngine(Synchronizable):
 
 			#TODO self._db.instance_persist(inst)
 		except:
-			self._log.error("Error while creating instance {} for the workflow {} with configuration {}".format(inst_name, flow_uri, cb()))
+			self._log.error("Error while creating instance {} for the workflow {} with configuration {}".format(
+				inst_name, flow_uri, conf_builder.get_conf()))
 			raise
 
 		self._log.debug("\n" + repr(inst))

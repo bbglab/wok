@@ -1,6 +1,7 @@
 import pymongo
 
 from wok.data.provider import DataProvider
+from wok.data.portref import PORT_MODE_IN, PORT_MODE_OUT
 
 from port import MongoInPort, MongoOutPort
 
@@ -80,12 +81,12 @@ class MongoProvider(DataProvider):
 		del task["_id"]
 		return task
 
-	def open_port_data(self, instance_name, module_path, task_index, port_name, mode):
-		port_coll = self.__port_data_collection(instance_name, module_path, port_name)
-		if mode == self.PORT_MODE_IN:
-			pass
-		elif mode == self.PORT_MODE_OUT:
-			return MongoOutPort(self, port_name, port_coll, task_index)
+	def open_port_data(self, instance_name, data_ref):
+		port_coll = self.__port_data_collection(instance_name, data_ref.module_path, data_ref.port_name)
+		if data_ref.mode == PORT_MODE_IN:
+			return MongoInPort(self, data_ref.port_name, port_coll, data_ref.start, data_ref.size)
+		elif data_ref.mode == PORT_MODE_OUT:
+			return MongoOutPort(self, data_ref.port_name, port_coll, data_ref._partition)
 
 	def remove_port_data(self, port):
 		module = port.parent

@@ -28,7 +28,7 @@ import threading
 from datetime import datetime
 
 import sqlalchemy.types as types
-from sqlalchemy import Column, Integer, String
+from sqlalchemy import Column, Integer, String, Float
 
 from wok.config import JOBS_CONF
 from wok.config.data import Data
@@ -65,15 +65,15 @@ class SagaState(types.TypeDecorator):
 class SagaJob(Job):
 	saga_id = Column(String)
 	saga_state = Column(SagaState)
-	saga_retry = Column(Integer, default=0)
+	saga_getjob_start = Column(Float)
 
 	def _repr(self, sb):
 		if self.saga_id is not None:
 			sb += [",saga_id={}".format(self.saga_id)]
 		if self.saga_state is not None:
 			sb += [",saga_state={}".format(self.saga_state)]
-		if self.saga_retry is not None:
-			sb += [",saga_retry={}".format(self.saga_retry)]
+		if self.saga_getjob_start is not None:
+			sb += [",saga_getjob_start={}".format(self.saga_getjob_start)]
 
 def datetime_from_posix(value):
 	if value is None:
@@ -176,7 +176,7 @@ class SagaJobManager(JobManager):
 
 		# FIXME Use the logging configuration mechanisms of SAGA
 		from wok import logger
-		logger.get_logger("SGEJobService", conf=Data.element(dict(level="debug")))
+		logger.get_logger("SGEJobService", conf=Data.element(dict(level=self._conf.get("saga_log.level", "error"))))
 
 		# TODO count the number of previously queued jobs
 
@@ -192,78 +192,125 @@ class SagaJobManager(JobManager):
 
 		session = self._create_session()
 
-		while self._running:
+		with self._qlock:
+			while self._running:
 
-			if self._max_queued != 0 and self._queued_count >= self._max_queued:
-				time.sleep(1)
-				continue
+				if self._max_queued != 0 and self._queued_count >= self._max_queued:
+					self._qlock.release()
+					time.sleep(1)
+					self._qlock.acquire()
+					continue
 
-			job = None
-			try:
-				with self._qlock:
-					job = session.query(SagaJob).filter(SagaJob.state==runstates.WAITING, SagaJob.saga_state==None)\
-						.order_by(SagaJob.priority).first()
+				job = None
+
+				try:
+					#self._log.debug("Looking for waiting jobs ...")
+					job = session.query(SagaJob).filter(
+							SagaJob.state==runstates.WAITING,
+							SagaJob.saga_state==None).order_by(SagaJob.priority).first()
 
 					if job is not None:
-						job.state = runstates.RUNNING
-						session.commit()
-			except Exception as e:
-				self._log.exception(e)
+						pass #self._queued_count += 1
+						#self._log.debug("Found: {}".format(repr(job)))
+				except Exception as e:
+					self._log.exception(e)
 
-			if job is None:
-				time.sleep(1)
-				continue
+				if job is None:
+					self._qlock.release()
+					time.sleep(1)
+					self._qlock.acquire()
+					continue
 
-			jd = saga.job.Description()
-			jd.name = job.task_id
+				self._qlock.release()
 
-			jd.executable = job.script
-			jd.arguments = []
-			jd.environment = job.env
+				jd = saga.job.Description()
+				jd.name = job.task_id
 
-			jd.spmd_variation = self._task_conf(job, "pe", self._pe)
-			jd.total_cpu_count = self._task_conf(job, "cpu_count", self._cpu_count)
+				jd.executable = job.script
+				jd.arguments = []
+				jd.environment = job.env
 
-			jd.queue = self._task_conf(job, "queue", self._queue)
-			jd.project = self._task_conf(job, "project", self._project)
-			jd.working_directory = self._task_conf(job, "working_directory", self._working_directory)
+				jd.spmd_variation = self._task_conf(job, "pe", self._pe)
+				jd.total_cpu_count = self._task_conf(job, "cpu_count", self._cpu_count)
 
-			jd.output = jd.error = os.path.join(self._remote_output_path, job.instance_id, "{}.txt".format(job.task_id))
+				jd.queue = self._task_conf(job, "queue", self._queue)
+				jd.project = self._task_conf(job, "project", self._project)
+				jd.working_directory = self._task_conf(job, "working_directory", self._working_directory)
 
-			with self._qlock:
-				saga_job = self._job_service.create_job(jd)
-				saga_job.run()
-				self._queued_count += 1
-				job.saga_id = saga_job.id
-				job.saga_state = saga_job.state
-				job.output = jd.output
-				session.commit()
+				jd.output = jd.error = os.path.join(self._remote_output_path, job.instance_id, "{}.txt".format(job.task_id))
+
+				# remove previous output file
+				try:
+					self._log.debug("Removing remote output for [{}] {} ...".format(job.id, job.task_id))
+					remote_path = "{}{}".format(self._file_url, jd.output)
+					ofile = saga.filesystem.File(remote_path)
+					ofile.remove()
+				except Exception as ex:
+					self._log.error("Couldn't remove remote job output file.")
+
+				self._qlock.acquire()
+
+				# create and run the job
+				try:
+					self._log.debug("Running job [{}] {} ...".format(job.id, job.task_id))
+					saga_job = None
+					saga_job = self._job_service.create_job(jd)
+					saga_job.run()
+
+					self._queued_count += 1
+
+					job.saga_id = saga_job.id
+					job.saga_state = saga_job.state
+					job.output = jd.output
+					session.commit()
+				except Exception as ex:
+					self._log.exception(ex)
+					if saga_job is not None and saga_job.started():
+						try:
+							saga_job.cancel()
+						finally:
+							session.rollback()
 
 		session.close()
+
+		self._log.debug("Run thread finished")
 
 	def _join_handler(self):
 
 		session = self._create_session()
 
-		while self._running:
+		with self._qlock:
+			while self._running:
 
-			with self._qlock:
+				self._log.debug("Checking for the state of jobs ...")
+
 				for job in session.query(SagaJob).filter(
 								SagaJob.saga_state != None,
 								~SagaJob.state.in_([runstates.FINISHED, runstates.FAILED, runstates.ABORTED])):
 
-					self._log.debug("Checking state for [{}] {} ... ".format(job.id, job.task_id))
+					#self._log.debug("Checking state for [{}] {} ... ".format(job.id, job.task_id))
 
 					try:
+						if job.saga_getjob_start is None:
+							job.saga_getjob_start = time.time()
+							session.commit()
+
+						#self._qlock.release()
 						saga_job = self._job_service.get_job(job.saga_id)
+						#self._qlock.acquire()
+
 						job.saga_state = saga_job.state
 					except saga.NoSuccess:
-						job.saga_retry += 1
-						if job.saga_retry >= 5:
+						# wait up to N seconds before failing
+						if time.time() - job.saga_getjob_start >= 120:
 							self._log.error("Couldn't reconnect to job {}".format(job.saga_id))
-							job.state = runstates.FINISHED
+							# what should we do ? failing or finishing ?
+							job.state = runstates.FAILED # let's be paranoid !
 							session.commit()
+
+							self._qlock.release()
 							self._fire_job_updated(job)
+							self._qlock.acquire()
 						continue
 
 					next_state = self.__JOB_STATE_FROM_SAGA[saga_job.state]
@@ -278,22 +325,33 @@ class SagaJobManager(JobManager):
 						job.hosts = saga_job.execution_hosts
 						#TODO exit_message, exception_trace
 
+					if saga_job.state == saga.job.DONE and saga_job.exit_code != 0:
+						next_state = runstates.FAILED
+
 					if job.state != runstates.WAITING and next_state == runstates.WAITING:
 						self._queued_count += 1
 					elif job.state == runstates.WAITING and next_state != runstates.WAITING:
 						self._queued_count -= 1
 
 					job.state = next_state
+
 					session.commit()
+
+					self._qlock.release()
 					self._fire_job_updated(job)
+					self._qlock.acquire()
 
 					if not self._running:
 						break
 
-			if self._running:
-				time.sleep(self._state_check_interval)
+				if self._running:
+					self._qlock.release()
+					time.sleep(self._state_check_interval)
+					self._qlock.acquire()
 
 		session.close()
+
+		self._log.debug("Join thread finished")
 
 	def _output(self, job):
 
@@ -308,8 +366,10 @@ class SagaJobManager(JobManager):
 		#self._log.error("\n[remote] {}\n[local ] {}".format(remote_path, local_path))
 
 		try:
+			self._qlock.release()
 			ofile = saga.filesystem.File(remote_path)
 			ofile.copy("file://{}".format(local_path))
+			self._qlock.acquire()
 			return open(local_path)
 		except Exception as ex:
 			self._log.error("Error while retrieving output file from {}".format(remote_path))
@@ -333,12 +393,16 @@ class SagaJobManager(JobManager):
 
 		self._running = False
 
+		self._qlock.release()
+
 		if self._run_thread is not None:
 			while self._run_thread.isAlive():
 				self._run_thread.join(1)
 		if self._join_thread is not None:
 			while self._join_thread.isAlive():
 				self._join_thread.join(1)
+
+		self._qlock.acquire()
 
 		self._log.debug("Closing session ...")
 

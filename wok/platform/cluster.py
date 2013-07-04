@@ -2,7 +2,7 @@ import os
 import subprocess
 from urlparse import urlparse
 
-from wok.core.cmd import FLOW_PATH, MODULE_SCRIPT_PATH
+from wok.core.cmd import FLOW_PATH, SCRIPT_PATH, MODULE_SCRIPT_PATH
 from wok.core.errors import ConfigMissingError
 
 from platform import Platform

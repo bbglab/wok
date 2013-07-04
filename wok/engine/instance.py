@@ -32,6 +32,8 @@ from wok.config.data import Data
 from wok.core import runstates
 from wok.core.utils.sync import synchronized
 from wok.core.utils.sync import Synchronizable
+from wok.data import DataProvider
+from wok.data.portref import PortDataRef, MergedPortDataRef
 from wok.engine.nodes import *
 
 # 2011-10-06 18:39:46,849 bfast_localalign-0000 INFO  : hello world
@@ -318,7 +320,7 @@ class Instance(object):
 		#self._log.debug([p.id for p in source_ports])
 
 		for port in source_ports:
-			port.data = self._storage.create_port_data(port)
+			port.data = PortDataRef(port.parent.id, port.name)
 			if port.id in linked_by:
 				next_ports.update(set([ports_by_id[port_id] for port_id in linked_by[port.id]]))
 
@@ -354,10 +356,12 @@ class Instance(object):
 						mod.depends.add(dep_mod)
 						dep_mod.notify.add(mod)
 
+				assert len(linked_data) > 0
+
 				if len(linked_data) == 1:
-					port.data = self._storage.create_port_linked_data(port, linked_data[0])
+					port.data = linked_data[0].link()
 				else:
-					port.data = self._storage.create_port_joined_data(port, linked_data)
+					port.data = MergedPortDataRef(linked_data)
 
 				visited_ports.add(port.id)
 
@@ -409,19 +413,19 @@ class Instance(object):
 		module_by_id[module.id] = module
 		
 		for port in module.in_ports:
-			if len(port.data.sources) > 0:
-				data = set(port.data.sources)
-			else:
-				data = set([port.data])
+			data_ref = set(port.data.refs)
 			if module not in mod_req_sources:
-				mod_req_sources[module] = data
+				mod_req_sources[module] = data_ref
 			else:
-				mod_req_sources[module].update(data)
+				mod_req_sources[module].update(data_ref)
+
 		for port in module.out_ports:
-			if port.data not in source_providers:
-				source_providers[port.data] = set([module])
+			assert len(port.data.refs) == 1
+			data_ref = port.data.refs[0]
+			if data_ref not in source_providers:
+				source_providers[data_ref] = set([module])
 			else:
-				source_providers[port.data].add(module)
+				source_providers[data_ref].add(module)
 
 		for m in module.modules:
 			self._prepare_dependency_map(m, mod_req_sources, module_by_id, source_providers)
@@ -576,7 +580,12 @@ class Instance(object):
 		psizes = []
 		mwsize = sys.maxint
 		for port in module.in_ports:
-			psize = port.data.size()
+			psize = 0
+			for data_ref in port.data.refs:
+				port_data = self.platform.data.open_port_data(self.name, data_ref)
+				data_ref.size = port_data.size()
+				psize += data_ref.size
+			port.data.size = psize
 			psizes += [psize]
 			pwsize = port.wsize
 			self._log.debug("[{}] {}: size={}, wsize={}".format(self.name, port.id, psize, pwsize))
@@ -591,8 +600,8 @@ class Instance(object):
 			tasks += [task]
 
 			for port in module.out_ports:
-				data = port.data.get_partition()
-				task.out_port_data.append(data)
+				data = port.data.partition()
+				task.out_port_data.append((port.name, data))
 		else:
 			# Check whether all inputs have the same size
 			psize = psizes[0]
@@ -619,26 +628,20 @@ class Instance(object):
 					self._log.debug("[{}] {}: num_par={}, psize={}, mwsize={}".format(self.name, module.id, num_partitions, psize, mwsize))
 
 			start = 0
-			partitions = []
 			for i in xrange(num_partitions):
-				task = TaskNode(parent = module, index = i)
+				task = TaskNode(parent=module, index=i)
 				tasks += [task]
 				end = min(start + mwsize, psize)
 				size = end - start
-				partitions += [(task, start,  size)]
-				self._log.debug("[{}] {}[{:04d}]: start={}, end={}, size={}".format(self.name, module.id, i, start, end, size))
-				start += mwsize
 
-			#self._log.debug(repr(partitions))
-
-			for partition in partitions:
-				task, start, size = partition
 				for port in module.in_ports:
-					data = port.data.get_slice(start, size)
-					task.in_port_data.append(data)
+					task.in_port_data.append((port.name, port.data.slice(start, size)))
 				for port in module.out_ports:
-					data = port.data.get_partition()
-					task.out_port_data.append(data)
+					task.out_port_data.append((port.name, port.data.partition()))
+
+				self._log.debug("[{}] {}[{:04d}]: start={}, end={}, size={}".format(self.name, module.id, i, start, end, size))
+
+				start += mwsize
 
 		return tasks
 
