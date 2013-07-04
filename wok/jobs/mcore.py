@@ -180,7 +180,7 @@ class McoreJobManager(JobManager):
 			thread.start()
 
 	def _submit(self, job):
-		default_output_path = os.path.join(self._work_path, "output")
+		default_output_path = os.path.join(self._work_path, "output", job.instance_id)
 		output_path = self._conf.get("output_path", default_output_path)
 		job.output = os.path.abspath(os.path.join(output_path, "{}.txt".format(job.task_id)))
 

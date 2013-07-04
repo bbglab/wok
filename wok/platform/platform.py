@@ -59,7 +59,7 @@ class Platform(object):
 				name = conf["type"]
 
 		if "work_path" not in conf:
-			conf["work_path"] = os.path.join(self._work_path, "jobs", name)
+			conf["work_path"] = os.path.join(self._work_path, "jobs_{}".format(name))
 
 		self._log.info("Creating '{}' job manager ...".format(name))
 		self._log.debug("Job manager configuration: {}".format(repr(conf)))

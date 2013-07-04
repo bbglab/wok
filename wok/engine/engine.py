@@ -33,11 +33,9 @@ from wok.config.cli import ConfigBuilder
 from wok.core import runstates
 from wok.core import events
 from wok.core.utils.sync import Synchronizable, synchronized
-from wok.core.utils.logs import parse_log
+from wok.core.utils.logsdb import LogsDb
 from wok.core.flow.loader import FlowLoader
 from wok.core.projects import ProjectManager
-from wok.core.storage import StorageContext
-from wok.core.storage.factory import create_storage
 from wok.platform.factory import create_platform
 from wok.jobs import JobSubmission
 from wok.jobs import create_job_manager
@@ -108,8 +106,6 @@ class WokEngine(Synchronizable):
 		self._platform = self._create_platform()
 		#self._job_manager = self._create_job_manager()
 
-		self._storage = self._create_storage(wok_conf)
-
 		self._projects = ProjectManager(self._conf.get("projects"))
 		self._projects.initialize()
 
@@ -131,51 +127,12 @@ class WokEngine(Synchronizable):
 		name = conf.get("type", "local")
 
 		if "work_path" not in conf:
-			conf["work_path"] = os.path.join(self._work_path, "platform", name)
+			conf["work_path"] = os.path.join(self._work_path, "platform_{}".format(name))
 
 		self._log.info("Creating '{}' platform ...".format(name))
 		self._log.debug("Platform configuration: {}".format(repr(conf)))
 
 		return create_platform(name, conf)
-
-	'''
-	def _create_job_manager(self):
-		"""
-		Creates the job manager according to the configuration
-		:return: JobManager
-		"""
-
-		name = "mcore"
-
-		conf = Data.element()
-		if "jobs" in self._conf:
-			conf.merge(self._conf["jobs"])
-			if "type" in conf:
-				name = conf["type"]
-				del conf["type"]
-
-		if "work_path" not in conf:
-			conf["work_path"] = os.path.join(self._work_path, "jobs", name)
-
-		self._log.info("Creating '{}' job manager ...".format(name))
-		self._log.debug("Job manager configuration: {}".format(repr(conf)))
-
-		return create_job_manager(name, conf)
-	'''
-
-	@staticmethod
-	def _create_storage(wok_conf):
-		storage_conf = wok_conf.get("storage")
-		if storage_conf is None:
-			storage_conf = wok_conf.element()
-
-		storage_type = storage_conf.get("type", "sfs")
-
-		if "work_path" not in storage_conf:
-			wok_work_path = wok_conf.get("work_path", os.path.join(os.getcwd(), "wok"))
-			storage_conf["work_path"] = os.path.join(wok_work_path, "storage")
-
-		return create_storage(storage_type, StorageContext.CONTROLLER, storage_conf)
 
 	def _on_job_update(self, event, **kwargs):
 		self.notify()
@@ -369,27 +326,23 @@ class WokEngine(Synchronizable):
 				module = task.parent
 				module_id = module.id
 				instance_name = module.instance.name
-				logs_storage = self._storage.logs
 
-				logs = []
-#				last_timestamp = None
-				line = output.readline()
-				while len(line) > 0:
-					timestamp, level, name, text = parse_log(line)
-#					if timestamp is None:
-#						timestamp = last_timestamp
-#					last_timestamp = timestamp
+				path = os.path.join(self._work_path, "logs", instance_name, module_id)
+				if not os.path.isdir(path):
+					try:
+						os.makedirs(path)
+					except:
+						if not os.path.isdir(path):
+							raise
+				path = os.path.join(path, "{:08}.db".format(task_index))
+				if os.path.isfile(path):
+					os.remove(path)
 
-					logs += [(timestamp, level, name, text)]
+				db = LogsDb(path)
+				db.open()
+				db.add(instance_name, module_id, task_index, output)
+				db.close()
 
-					line = output.readline()
-
-					if len(line) == 0 or len(logs) >= 1000:
-						logs_storage.append(instance_name, module_id, task_index, logs)
-						
-						#self._log.debug("Task %s partial logs:\n%s" % (task.id, "\n".join("\t".join(log) for log in logs)))
-
-						logs = []
 			except:
 				num_exc += 1
 				_log.exception("Exception in wok-engine logs thread (%d)" % num_exc)
@@ -463,10 +416,6 @@ class WokEngine(Synchronizable):
 	@property
 	def work_path(self):
 		return self._work_path
-
-	@property
-	def storage(self):
-		return self._storage
 
 	@property
 	def projects(self):
@@ -602,7 +551,7 @@ class WokEngine(Synchronizable):
 			self._instances += [inst]
 			self._instances_map[inst_name] = inst
 
-			self._storage.clean(inst)
+			#TODO self._storage.clean(inst)
 
 			self._cvar.notify()
 
@@ -625,4 +574,4 @@ class WokEngine(Synchronizable):
 
 			self._platform.jobs.abort(job_ids=self._instance_job_ids(inst))
 
-			self._storage.clean(inst)
+			#TODO self._storage.clean(inst)

@@ -62,8 +62,6 @@ class Instance(object):
 		self.engine = engine
 		self.platform = platform
 
-		self._storage = engine.storage # DEPRECATED
-
 		self._state = runstates.READY
 
 		self.root_node = None
@@ -847,6 +845,8 @@ class Instance(object):
 
 		return m.tasks[task_index]
 
+	#TODO
+	"""
 	def task_logs(self, module_id, task_index):
 		if self._storage.logs.exist(self.name, module_id, task_index):
 			return self._storage.logs.query(self.name, module_id, task_index)
@@ -868,6 +868,7 @@ class Instance(object):
 			logs += [(timestamp, level, name, text)]
 		
 		return logs
+	"""
 
 	def modules_count_by_state(self):
 		return self.root_node.update_modules_count_by_state()
