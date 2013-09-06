@@ -2,12 +2,12 @@ PORT_MODE_IN = "in"
 PORT_MODE_OUT = "out"
 
 class PortDataRef(object):
-	def __init__(self, module_path, port_name, partition=None, start=0, size=None, mode=PORT_MODE_OUT):
+	def __init__(self, component_cname, port_name, partition=None, start=0, size=None, mode=PORT_MODE_OUT):
 
-		self.module_path = module_path
+		self.component_cname = component_cname
 		self.port_name = port_name
 
-		self._partition = partition
+		self.partition_index = partition
 		self.start = start
 		self.size = size
 
@@ -16,38 +16,38 @@ class PortDataRef(object):
 		self._last_partition = 0
 
 	def __eq__(self, other):
-		return self.module_path == other.module_path and self.port_name == other.port_name
+		return self.component_cname == other.component_cname and self.port_name == other.port_name
 
 	@property
 	def refs(self):
 		return [self]
 
 	def link(self):
-		return PortDataRef(self.module_path, self.port_name, start=self.start, size=self.size, mode=PORT_MODE_IN)
+		return PortDataRef(self.component_cname, self.port_name, start=self.start, size=self.size, mode=PORT_MODE_IN)
 
 	def slice(self, start, size):
-		return PortDataRef(self.module_path, self.port_name, start=start, size=size, mode=PORT_MODE_IN)
+		return PortDataRef(self.component_cname, self.port_name, start=start, size=size, mode=PORT_MODE_IN)
 
 	def partition(self):
 		part = self._last_partition
 		self._last_partition += 1
-		return PortDataRef(self.module_path, self.port_name, partition=part, mode=PORT_MODE_OUT)
+		return PortDataRef(self.component_cname, self.port_name, partition=part, mode=PORT_MODE_OUT)
 
 	def to_native(self):
 		return dict(
-			module=self.module_path,
+			component=self.component_cname,
 			port=self.port_name,
-			partition=self._partition,
+			partition=self.partition_index,
 			start=self.start,
 			size=self.size,
 			mode=self.mode)
 
 	def __repr__(self):
-		sb = ["<", self.mode, " ", ".".join([self.module_path, self.port_name])]
-		if self._partition is not None or self.start != 0 or self.size is not None:
+		sb = ["<", self.mode, " ", ".".join([self.component_cname, self.port_name])]
+		if self.partition_index is not None or self.start != 0 or self.size is not None:
 			sb += [" "]
-			if self._partition is not None:
-				sb + [str(self._partition), "."]
+			if self.partition_index is not None:
+				sb + [str(self.partition_index), "."]
 			sb += [str(self.start)]
 			if self.size is not None:
 				sb += [":", str(self.start + self.size - 1)]
@@ -58,7 +58,7 @@ class PortDataRef(object):
 	def create(desc):
 		if "refs" not in desc:
 			return PortDataRef(
-				desc["module"], desc["port"],
+				desc["component"], desc["port"],
 				partition=desc.get("partition"),
 				start=desc.get("start"),
 				size=desc.get("size"),

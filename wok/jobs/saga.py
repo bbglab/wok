@@ -176,7 +176,7 @@ class SagaJobManager(JobManager):
 
 		# FIXME Use the logging configuration mechanisms of SAGA
 		from wok import logger
-		logger.get_logger("SGEJobService", conf=Data.element(dict(level=self._conf.get("saga_log.level", "error"))))
+		logger.init_logger("SGEJobService", conf=Data.element(dict(level=self._conf.get("saga_log.level", "error"))))
 
 		# TODO count the number of previously queued jobs
 
@@ -188,17 +188,19 @@ class SagaJobManager(JobManager):
 		self._run_thread.start()
 		self._join_thread.start()
 
+	#TODO def _attach(self, session, job):
+
 	def _run_handler(self):
 
 		session = self._create_session()
 
-		with self._qlock:
+		with self._lock:
 			while self._running:
 
 				if self._max_queued != 0 and self._queued_count >= self._max_queued:
-					self._qlock.release()
+					self._lock.release()
 					time.sleep(1)
-					self._qlock.acquire()
+					self._lock.acquire()
 					continue
 
 				job = None
@@ -216,15 +218,15 @@ class SagaJobManager(JobManager):
 					self._log.exception(e)
 
 				if job is None:
-					self._qlock.release()
+					self._lock.release()
 					time.sleep(1)
-					self._qlock.acquire()
+					self._lock.acquire()
 					continue
 
-				self._qlock.release()
+				self._lock.release()
 
 				jd = saga.job.Description()
-				jd.name = job.task_id
+				jd.name = job.name
 
 				jd.executable = job.script
 				jd.arguments = []
@@ -237,22 +239,22 @@ class SagaJobManager(JobManager):
 				jd.project = self._task_conf(job, "project", self._project)
 				jd.working_directory = self._task_conf(job, "working_directory", self._working_directory)
 
-				jd.output = jd.error = os.path.join(self._remote_output_path, job.instance_id, "{}.txt".format(job.task_id))
+				jd.output = jd.error = os.path.join(self._remote_output_path, job.case_name, "{}.txt".format(job.name))
 
 				# remove previous output file
 				try:
-					self._log.debug("Removing remote output for [{}] {} ...".format(job.id, job.task_id))
+					self._log.debug("Removing remote output for [{}] {} ...".format(job.id, job.name))
 					remote_path = "{}{}".format(self._file_url, jd.output)
 					ofile = saga.filesystem.File(remote_path)
 					ofile.remove()
 				except Exception as ex:
 					self._log.error("Couldn't remove remote job output file.")
 
-				self._qlock.acquire()
+				self._lock.acquire()
 
 				# create and run the job
 				try:
-					self._log.debug("Running job [{}] {} ...".format(job.id, job.task_id))
+					self._log.debug("Running job [{}] {} ...".format(job.id, job.name))
 					saga_job = None
 					saga_job = self._job_service.create_job(jd)
 					saga_job.run()
@@ -279,16 +281,16 @@ class SagaJobManager(JobManager):
 
 		session = self._create_session()
 
-		with self._qlock:
+		with self._lock:
 			while self._running:
 
 				self._log.debug("Checking for the state of jobs ...")
 
 				for job in session.query(SagaJob).filter(
 								SagaJob.saga_state != None,
-								~SagaJob.state.in_([runstates.FINISHED, runstates.FAILED, runstates.ABORTED])):
+								~SagaJob.state.in_(runstates.TERMINAL_STATES)):
 
-					#self._log.debug("Checking state for [{}] {} ... ".format(job.id, job.task_id))
+					#self._log.debug("Checking state for [{}] {} ... ".format(job.id, job.job_name))
 
 					try:
 						if job.saga_getjob_start is None:
@@ -308,9 +310,9 @@ class SagaJobManager(JobManager):
 							job.state = runstates.FAILED # let's be paranoid !
 							session.commit()
 
-							self._qlock.release()
+							self._lock.release()
 							self._fire_job_updated(job)
-							self._qlock.acquire()
+							self._lock.acquire()
 						continue
 
 					next_state = self.__JOB_STATE_FROM_SAGA[saga_job.state]
@@ -318,12 +320,11 @@ class SagaJobManager(JobManager):
 						continue
 
 					if saga_job.state in [saga.job.DONE, saga.job.FAILED, saga.job.CANCELED]:
-						job.exit_code = saga_job.exit_code
+						job.exitcode = saga_job.exit_code
 						job.created = datetime_from_posix(saga_job.created)
 						job.started = datetime_from_posix(saga_job.started)
 						job.finished = datetime_from_posix(saga_job.finished)
-						job.hosts = saga_job.execution_hosts
-						#TODO exit_message, exception_trace
+						job.hostname = saga_job.execution_hosts
 
 					if saga_job.state == saga.job.DONE and saga_job.exit_code != 0:
 						next_state = runstates.FAILED
@@ -337,17 +338,17 @@ class SagaJobManager(JobManager):
 
 					session.commit()
 
-					self._qlock.release()
+					self._lock.release()
 					self._fire_job_updated(job)
-					self._qlock.acquire()
+					self._lock.acquire()
 
 					if not self._running:
 						break
 
 				if self._running:
-					self._qlock.release()
+					self._lock.release()
 					time.sleep(self._state_check_interval)
-					self._qlock.acquire()
+					self._lock.acquire()
 
 		session.close()
 
@@ -357,7 +358,7 @@ class SagaJobManager(JobManager):
 
 		remote_path = "{}{}".format(self._file_url, job.output)
 
-		local_path = os.path.join(self._output_path, job.instance_id)
+		local_path = os.path.join(self._output_path, job.case_name)
 		if not os.path.exists(local_path):
 			os.makedirs(local_path)
 
@@ -366,10 +367,10 @@ class SagaJobManager(JobManager):
 		#self._log.error("\n[remote] {}\n[local ] {}".format(remote_path, local_path))
 
 		try:
-			self._qlock.release()
+			self._lock.release()
 			ofile = saga.filesystem.File(remote_path)
 			ofile.copy("file://{}".format(local_path))
-			self._qlock.acquire()
+			self._lock.acquire()
 			return open(local_path)
 		except Exception as ex:
 			self._log.error("Error while retrieving output file from {}".format(remote_path))
@@ -393,7 +394,7 @@ class SagaJobManager(JobManager):
 
 		self._running = False
 
-		self._qlock.release()
+		self._lock.release()
 
 		if self._run_thread is not None:
 			while self._run_thread.isAlive():
@@ -402,7 +403,7 @@ class SagaJobManager(JobManager):
 			while self._join_thread.isAlive():
 				self._join_thread.join(1)
 
-		self._qlock.acquire()
+		self._lock.acquire()
 
 		self._log.debug("Closing session ...")
 

@@ -66,11 +66,10 @@ class ClusterPlatform(Platform):
 		if ret != 0:
 			self._log.error("Error syncing project {}:\n{}".format(project.name, " ".join(cmd)))
 
-	def _job_submissions(self, tasks):
-		for task in tasks:
-			js = self._create_job_submission(task)
-			project = task.instance.project
-			flow_path = os.path.dirname(task.parent.flow_path)
+	def _filter_job_submissions(self, job_submissions):
+		for js in job_submissions:
+			project = js.case.project
+			flow_path = os.path.dirname(js.task.flow_path)
 			rel_path = os.path.relpath(flow_path, project.path)
 			remote_flow_path = os.path.join(self._projects_path, project.name, rel_path)
 			js.env[FLOW_PATH] = remote_flow_path

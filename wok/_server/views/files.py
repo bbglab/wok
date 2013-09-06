@@ -19,18 +19,13 @@
 #
 ###############################################################################
 
-from wok.server.common import wok, Breadcrumb, BcLink
+from wok._server.common import wok, Breadcrumb, BcLink
 
 from flask import Module, request, session, redirect, url_for, \
 	render_template, flash, current_app
 
-monitoring = Module(__name__)
+files = Module(__name__)
 
-@monitoring.route('/')
+@files.route('/')
 def index():
-	instances = wok().instances()
-	return render_template('monitoring.html', instances=instances)
-
-@monitoring.route('/instance/<name>')
-def instance(name):
-	return render_template('monitoring/instance.html', name=name)
+	return render_template('files.html')

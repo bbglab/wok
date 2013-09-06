@@ -8,7 +8,7 @@ The easier way for the user to monitor and control the execution of the workflow
 Home
 ++++
 
-Instance details
+Case details
 ++++++++++++++++
 
 Workflow details

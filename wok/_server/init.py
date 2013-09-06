@@ -26,12 +26,12 @@ from werkzeug import ImmutableDict
 
 from jinja2 import evalcontextfilter, Markup
 
-from wok.server.views.home import home
-from wok.server.views.workflows import workflows
-from wok.server.views.monitoring import monitoring
-from wok.server.views.monitoring_api import monitoring_api
-from wok.server.views.files import files
-from wok.server.views.settings import settings
+from wok._server.views.home import home
+from wok._server.views.workflows import workflows
+from wok._server.views.monitoring import monitoring
+from wok._server.views.monitoring_api import monitoring_api
+from wok._server.views.files import files
+from wok._server.views.settings import settings
 
 class FlaskWithPygments(Flask):
 

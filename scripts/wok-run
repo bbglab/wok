@@ -30,14 +30,14 @@ from wok.config.data import Data
 from wok.engine import WokEngine
 
 def add_options(parser):
-	parser.add_option("-n", "--instance-name", dest="instance_names",
+	parser.add_option("-n", "--case-name", dest="case_names",
 				action="append", metavar="NAME",
 				help="Set the instance name. Default name is built from the current date.")
 
 def main():
 	# Wok initialization
 
-	default_instance_name = datetime.now().strftime("i%Y-%m-%d-%H-%M-%S")
+	default_case_name = datetime.now().strftime("i%Y-%m-%d-%H-%M-%S")
 	install_path = os.path.dirname(os.path.realpath(__file__))
 
 	# Get configuration
@@ -71,12 +71,7 @@ def main():
 
 	# initialize logging
 
-	logger.initialize(wok_conf.get("log"))
-
-	for (log_name, log_conf) in wok_conf.get("logging", default=Data.list):
-		if isinstance(log_conf, basestring):
-			log_conf = Data.element(dict(level=log_conf))
-		logger.get_logger(log_name, conf=log_conf)
+	logger.initialize(wok_conf.get("logging"))
 
 	log = logger.get_logger("wok.run")
 
@@ -103,30 +98,28 @@ def main():
 	retcode = 0
 
 	try:
+		# start wok on the background
+		wok.start(wait=False, single_run=not server_mode)
+
 		# create instances
 		if flow_uris is not None:
-			instance_names = conf.options.instance_names
-			if instance_names is None:
-				instance_names = []
+			case_names = conf.options.case_names or []
 			for i, flow_uri in enumerate(flow_uris):
-				if i < len(instance_names):
-					instance_name = instance_names[i]
+				if i < len(case_names):
+					case_name = case_names[i]
 				else:
 					if len(flow_uris) == 1:
-						instance_name = default_instance_name
+						case_name = default_case_name
 					else:
-						instance_name = "%s-%02d" % (default_instance_name, i)
+						case_name = "%s-%02d" % (default_case_name, i)
 
-				inst = wok.create_instance(instance_name, conf.builder, flow_uri)
+				case = wok.create_case(case_name, conf.builder, flow_uri)
 				if not server_mode or start_instances:
-					inst.start()
-
-		# start wok on the background
-		wok.start(wait = False, single_run=not server_mode)
+					case.start()
 
 		# run server
 		if server_mode:
-			from wok.server.init import app
+			from wok._server.init import app
 
 			log.info("Running server at http://{0}:{1}".format(server_host, server_port))
 
@@ -134,7 +127,7 @@ def main():
 			if log_conf is None:
 				log_conf = Data.element()
 				log_conf["level"] = "warn"
-			app_log = logger.get_logger("werkzeug", conf = log_conf)
+			app_log = logger.get_logger("werkzeug", conf=log_conf)
 			app_log.info("Log configured")
 
 			app.config["WOK"] = wok

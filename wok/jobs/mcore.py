@@ -45,11 +45,18 @@ class McoreJobManager(JobManager):
 
 		self._task_output_files = {}
 
+		# get hostname
+		try:
+			import socket
+			self.hostname = socket.gethostname()
+		except:
+			self.hostname = "unknown"
+
 	def _next_job(self, session):
 		job = None
 		while job is None and self._running:
 			try:
-				with self._qlock:
+				with self._lock:
 					job = session.query(McoreJob).filter_by(state=runstates.WAITING).order_by(McoreJob.priority).first()
 					if job is not None:
 						job.state = runstates.RUNNING
@@ -78,7 +85,7 @@ class McoreJobManager(JobManager):
 				if job is None:
 					break
 
-				self._log.debug("Running task [{}] {} ...".format(job.id, job.task_id))
+				self._log.debug("Running task [{}] {} ...".format(job.id, job.name))
 
 				# Prepare execution
 
@@ -96,17 +103,19 @@ class McoreJobManager(JobManager):
 				if cwd is not None:
 					cwd = os.path.abspath(cwd)
 
-				job.start_time = datetime.now()
+				job.hostname = self.hostname
+				job.started = datetime.now()
 				self._update_job(session, job)
 
 				# Prepare the script file
 
-				script_path = tempfile.mkstemp(prefix=job.task_id, suffix=".sh")[1]
+				script_path = tempfile.mkstemp(prefix=job.name, suffix=".sh")[1]
 				with open(script_path, "w") as f:
 					f.write(script)
 
 				# Run the script
 
+				exception_trace = None
 				try:
 					process = subprocess.Popen(
 										args=["/bin/bash", script_path],
@@ -121,46 +130,36 @@ class McoreJobManager(JobManager):
 						time.sleep(1)
 						session.refresh(job, ["state"])
 
-					job.end_time = datetime.now()
+					job.finished = datetime.now()
 
 					if process.poll() is None: # and (self._kill_threads or job.state != runstates.RUNNING):
-						self._log.warn("Killing task {} ...".format(job.task_id))
+						self._log.warn("Killing task {} ...".format(job.name))
 						process.terminate()
 						while process.poll() is None:
 							time.sleep(1)
 
 						job.state = runstates.ABORTED
-						job.exit_code = process.returncode
-						job.exit_message = "Task aborted"
+						job.exitcode = process.returncode
 					else:
 						job.state = runstates.FINISHED if process.returncode == 0 else runstates.FAILED
-						job.exit_code = process.returncode
-						job.exit_message = "Task {} with return code {}".format(job.state.title, job.exit_code)
-
-						#TODO get task results: exit_message & exception_trace
+						job.exitcode = process.returncode
 
 				except Exception as e:
 					self._log.exception(e)
-					import traceback
 					job.state = runstates.FAILED
-					job.end_time = time.time()
-					job.exit_code = exit_codes.RUN_THREAD_EXCEPTION
-					job.exit_message = "Exception {}".format(str(e))
-					job.exception_trace = traceback.format_exc()
+					job.finished = datetime.now()
+					job.exitcode = exit_codes.RUN_THREAD_EXCEPTION
 				finally:
 					o.close()
 					if os.path.exists(script_path):
 						os.remove(script_path)
 
 				if job.state == runstates.FINISHED:
-					self._log.debug("Task finished [{}] {}".format(job.id, job.task_id))
+					self._log.debug("Task finished [{}] {}".format(job.id, job.name))
 				elif job.state == runstates.ABORTED:
-					self._log.debug("Task aborted [{}] {}".format(job.id, job.task_id))
+					self._log.debug("Task aborted [{}] {}".format(job.id, job.name))
 				else:
-					sb = ["Task failed [{}] {}: {}".format(job.id, job.task_id, job.exit_message)]
-					if job.exception_trace is not None:
-						sb += ["\n", job.exception_trace]
-					self._log.error("".join(sb))
+					self._log.debug("Task failed [{}] {}".format(job.id, job.name))
 
 				self._update_job(session, job)
 
@@ -179,10 +178,12 @@ class McoreJobManager(JobManager):
 			self._threads.append(thread)
 			thread.start()
 
+	#TODO def _attach(self, session, job):
+
 	def _submit(self, job):
-		default_output_path = os.path.join(self._work_path, "output", job.instance_id)
+		default_output_path = os.path.join(self._work_path, "output", job.case_name)
 		output_path = self._conf.get("output_path", default_output_path)
-		job.output = os.path.abspath(os.path.join(output_path, "{}.txt".format(job.task_id)))
+		job.output = os.path.abspath(os.path.join(output_path, "{}.txt".format(job.name)))
 
 		with self._run_lock:
 			if not os.path.exists(output_path):
@@ -195,7 +196,7 @@ class McoreJobManager(JobManager):
 		return open(job.output)
 
 	def _join(self, session, job):
-		while self._running and job.state not in [runstates.FINISHED, runstates.FAILED, runstates.ABORTED]:
+		while self._running and job.state not in runstates.TERMINAL_STATES:
 			self._run_cvar.wait(2)
 			session.expire(job, [McoreJob.state])
 

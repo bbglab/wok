@@ -26,16 +26,22 @@ __JOB_MANAGERS = {
 	"mcore" : McoreJobManager
 }
 
+def __log(msg, level=None):
+	from wok.logger import get_logger
+	log = get_logger(name="wok.jobs")
+
+	if level is None:
+		import logging
+		level = logging.WARNING
+	log.log(level, msg)
+
 try:
 	from wok.jobs.saga import SagaJobManager
-
 	__JOB_MANAGERS["saga"] = SagaJobManager
-except Exception as ex:
-	from wok.logger import initialize, get_logger
-	initialize()
-	log = get_logger(name="jobs-factory")
-	log.warn("SAGA job manager can not be loaded: {}".format(str(ex)))
-	log.exception(ex)
+except ImportError:
+	__log("The SAGA job manager can not be loaded.")
+	__log("This manager is necessary only if you are going to run jobs in a cluster.")
+	__log("To install it run the following command: pip install saga-python")
 
 def create_job_manager(name, conf):
 	if name is None or name == "default":

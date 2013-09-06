@@ -25,6 +25,9 @@ import logging
 from Queue import Queue, Empty
 import threading
 from multiprocessing import cpu_count
+from datetime import datetime
+
+from sqlalchemy.orm.exc import NoResultFound
 
 from wok import logger
 from wok.config import COMMAND_CONF
@@ -32,20 +35,25 @@ from wok.config.data import Data, DataList
 from wok.config.cli import ConfigBuilder
 from wok.core import runstates
 from wok.core import events
+from wok.core import errors
 from wok.core.utils.sync import Synchronizable, synchronized
 from wok.core.utils.logsdb import LogsDb
 from wok.core.flow.loader import FlowLoader
 from wok.core.projects import ProjectManager
 from wok.platform.factory import create_platform
+from wok.core.cmd import create_command_builder
 from wok.jobs import JobSubmission
-from wok.jobs import create_job_manager
 
-from instance import Instance, SynchronizedInstance
+import db
+from nodes import WorkItemNode
+from case import Case, SynchronizedCase
+
+_DT_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 class WokEngine(Synchronizable):
 	"""
 	The Wok engine manages the execution of workflow instances.
-	Each instance represents a workflow loaded with a certain configuration.
+	Each case represents a workflow loaded with a certain configuration.
 	"""
 
 	def __init__(self, conf):
@@ -55,32 +63,16 @@ class WokEngine(Synchronizable):
 
 		self._conf = wok_conf = conf["wok"]
 
-		self._log = logger.get_logger("wok.engine", conf=wok_conf.get("log"))
+		self._log = logger.get_logger("wok.engine")
 
-		self._work_path = wok_conf.get("work_path", os.path.join(os.getcwd(), "wok"))
+		self._work_path = wok_conf.get("work_path", os.path.join(os.getcwd(), "wok-files"))
 		if not os.path.exists(self._work_path):
 			os.makedirs(self._work_path)
 
-		self._flow_path = wok_conf.get("flow_path")
-		if self._flow_path is None:
-			self._flow_path = [os.curdir]
-		elif isinstance(self._flow_path, basestring):
-			self._flow_path = [self._flow_path]
-		elif not isinstance(self._flow_path, (list, DataList)):
-			raise Exception('wok.flow_path: A list of paths expected. Example ["path1", "path2"]')
+		self._cases = []
+		self._cases_by_name = {}
 
-		"""
-		self._flow_loader = FlowLoader(self._flow_path)
-		sb = ["wok.flow_path:\n"]
-		for uri, ff in self._flow_loader.flow_files.items():
-			sb += ["\t", uri, "\t", ff[0], "\n"]
-		self._log.debug("".join(sb))
-		"""
-
-		self._instances = []
-		self._instances_map = {}
-
-		self._stopping_instances = {}
+		self._stopping_cases = {}
 
 		#self._lock = Lock()
 		self._cvar = threading.Condition(self._lock)
@@ -100,16 +92,18 @@ class WokEngine(Synchronizable):
 
 		self._notified = False
 
-		#db_path = os.path.join(self._work_path, "engine.db")
-		#self._db = create_db("sqlite:///{}".format(db_path))
+		recover = wok_conf.get("recover", False)
+
+		db_path = os.path.join(self._work_path, "engine.db")
+		self._db = db.create_engine("sqlite:///{}".format(db_path), drop_tables=not recover)
 
 		self._platform = self._create_platform()
-		#self._job_manager = self._create_job_manager()
 
 		self._projects = ProjectManager(self._conf.get("projects"))
 		self._projects.initialize()
 
-		self._restore_state()
+		if recover:
+			self.__recover_from_db()
 
 	def _create_platform(self):
 		"""
@@ -137,14 +131,10 @@ class WokEngine(Synchronizable):
 	def _on_job_update(self, event, **kwargs):
 		self.notify()
 
-	def _restore_state(self):
-		#TODO restore db state
-		pass
+	def __recover_from_db(self):
+		raise errors.UnimplementedError()
 
-	def _instance_job_ids(self, instance):
-		return [job_id for job_id, task in self._job_task_map.items() if task.instance == instance]
-
-	def __queue_adaptative_get(self, queue, start_timeout = 1, max_timeout = 4):
+	def __queue_adaptative_get(self, queue, start_timeout=1, max_timeout=4):
 		timeout = start_timeout
 		msg = None
 		while self._running and msg is None:
@@ -155,7 +145,8 @@ class WokEngine(Synchronizable):
 					timeout += 1
 		return msg
 
-	def __queue_batch_get(self, queue, start_timeout = 1, max_timeout = 4):
+	# Not used anywhere
+	def __queue_batch_get(self, queue, start_timeout=1, max_timeout=4):
 		timeout = start_timeout
 		msg_batch = []
 		while self._running and len(msg_batch) == 0:
@@ -168,6 +159,50 @@ class WokEngine(Synchronizable):
 					timeout += 1
 		return msg_batch
 
+	def __job_submissions(self, session):
+		#FIXME Be fair with priorities between different cases ?
+		query = session.query(db.WorkItem).filter(db.WorkItem.state == runstates.READY).order_by(db.WorkItem.priority)
+		for workitem in query:
+			case = self._cases_by_name[workitem.case.name]
+			task = case.component(workitem.task.cname)
+
+			js = JobSubmission(
+					case=case,
+					task=task,
+					workitem_id=workitem.id,
+					job_name=workitem.cname,
+					task_conf=task.conf,
+					priority=workitem.priority)
+
+			execution = task.execution
+			cmd_builder = create_command_builder(execution.mode)
+			js.script, js.env = cmd_builder.prepare(case, task, workitem.index)
+
+			yield js
+
+	def __remove_case(self, session, case):
+		"""
+		Definitively remove a case. The engine should be locked and no jobs running.
+		"""
+
+		self._log.info("Removing case {} ...".format(case.name))
+
+		del self._cases_by_name[name]
+		self._cases.remove(case)
+
+		#TODO clean the job manager output files
+
+		try:
+			shutil.rmtree(os.path.join(self._work_path, "logs", case.name))
+		except:
+			pass
+
+		# remove data
+		case.platform.data.remove_case(case.name)
+
+		# remove engine db objects and finalize case
+		case.remove(session)
+
 	# threads ----------------------
 
 	@synchronized
@@ -179,7 +214,6 @@ class WokEngine(Synchronizable):
 		# Start the logs threads
 
 		for i in range(cpu_count()):
-		#for i in range(1):
 			t = threading.Thread(target=self._logs, args=(i, ), name="wok-engine-logs-%d" % i)
 			self._logs_threads += [t]
 			t.start()
@@ -189,10 +223,7 @@ class WokEngine(Synchronizable):
 		self._join_thread = threading.Thread(target=self._join, name="wok-engine-join")
 		self._join_thread.start()
 
-		log_conf = self._conf.get("log")
-		if log_conf is not None:
-			log_conf = log_conf.clone().expand_vars(context=self._global_conf)
-		_log = logger.get_logger("wok.engine.run", conf=log_conf)
+		_log = logger.get_logger("wok.engine.run")
 
 		_log.debug("Engine run thread ready")
 
@@ -200,88 +231,122 @@ class WokEngine(Synchronizable):
 			try:
 				#_log.debug("Scheduling new tasks ...")
 
-				updated_modules = set()
+				session = db.Session()
 
-				# submit tasks ready to be executed
-				for inst in self._instances:
-					tasks = inst.schedule()
-					#submissions = self.__job_submissions(tasks)
-					for js, job_id in self._platform.submit(tasks):
-						self._job_task_map[job_id] = js.task
-						updated_modules.add(js.task.parent)
-				
+				updated_components = set()
+
+				# schedule tasks ready to be executed and save new workitems into the db
+				for case in self._cases:
+					components = case.schedule(session)
+					updated_components.update(components)
+					session.commit()
+
+				# submit workitems ready to be executed
+				job_submissions = self.__job_submissions(session)
+				for js, job_id, job_state in self._platform.submit(job_submissions): # TODO per case platform
+					workitem = session.query(db.WorkItem).filter(db.WorkItem.id == js.workitem_id).one()
+					workitem.job_id = job_id
+					workitem.state = job_state
+					js.task.dirty = True
+					session.commit()
+					updated_components.add(js.task)
+
+				session.close()
+
 				#_log.debug("Waiting for events ...")
 
-				while len(updated_modules) == 0 and not self._notified and self._running:
+				while len(updated_components) == 0 and not self._notified and self._running:
 					self._cvar.wait(1)
 				self._notified = False
 
 				if not self._running:
 					break
 
+				session = db.Session()
+
 				#_log.debug("Stoping jobs for aborting instances ...")
 
 				# check stopping instances
-				for inst in self._instances:
-					if inst.state == runstates.ABORTING and \
-								inst not in self._stopping_instances:
-							job_ids = inst.job_ids()
-							if len(job_ids) == 0:
-								inst.state = runstates.ABORTED
-							else:
-								_log.info("Stopping {} jobs for instance {} ...".format(len(job_ids), inst.name))
-								self._stopping_instances[inst] = set(job_ids)
-								self._platform.jobs.abort(job_ids)
+				for case in self._cases:
+					if case.state == runstates.ABORTING and case not in self._stopping_cases:
+						job_ids = session.query(db.WorkItem.job_id).filter(db.WorkItem.case_id == case.id).all()
+						if len(job_ids) == 0:
+							dbcase = session.query(db.Case).filter(db.Case.id == case.id)
+							dbcase.state = case.state = runstates.ABORTED
+							session.commit()
+
+							if case.removed:
+								self.__remove_case(session, case)
+								session.commit()
+						else:
+							_log.info("Stopping {} jobs for case {} ...".format(len(job_ids), case.name))
+							self._stopping_cases[case] = set(job_ids)
+							case.platform.jobs.abort(job_ids)
 
 				#_log.debug("Checking job state changes ...")
 
-				# detect tasks which state has changed
-				for job_id, state in self._platform.jobs.state():
-					task = self._job_task_map[job_id]
-					if task.state != state:
-						task.state = state
-						updated_modules.add(task.parent)
-						_log.debug("Task {} changed state to {}".format(task.id, state))
+				# detect workitems which state has changed
+				for job_id, state in self._platform.jobs.state(): # TODO per case platform
+					try:
+						workitem = session.query(db.WorkItem).filter(db.WorkItem.job_id == job_id).one()
+					except NoResultFound:
+						_log.warn("No work item available for the job {0} while retrieving state".format(job_id))
+						self._platform.jobs.abort(job_id)
+						self._platform.jobs.join(job_id)
+						continue
 
-						# if task has finished, queue it for logs retrieval
-						# otherwise queue it directly for joining
-						if state in [runstates.FINISHED, runstates.FAILED, runstates.ABORTED]:
-							self._logs_queue.put((task, job_id))
+					if workitem.state != state:
+						case = self._cases_by_name[workitem.case.name]
+						task = case.component(workitem.task.cname)
+						task.dirty = True
+						workitem.state = state
+						session.commit()
+						updated_components.add(task)
 
-				#_log.debug("Updating modules state ...\n" + "\n".join("\t{}".format(m.id) for m in sorted(updated_modules)))
-				#_log.debug("Updating modules state ...")
+						# if workitem has finished, queue it for logs retrieval
+						if state in runstates.TERMINAL_STATES:
+							self._logs_queue.put((workitem.id, job_id))
 
-				# update affected modules state
-				updated_instances = set()
-				for m in updated_modules:
-					inst = m.instance
-					inst.update_module_state_from_children(m)
-					_log.debug("Module {} updated state to {} ...".format(m.id, m.state))
-					updated_instances.add(inst)
+						_log.debug("[{}] Work Item {} changed state to {}".format(case.name, workitem.cname, state))
 
-					if self._log.isEnabledFor(logging.INFO):
-						count = m.update_tasks_count_by_state()
-						sb = ["[{}] {} ({})".format(m.instance.name, m.id, m.state.title)]
-						sep = " "
-						for state in runstates.STATES:
-							if state.title in count:
-								sb += [sep, "{}={}".format(state.symbol, count[state.title])]
-								if sep == " ":
-									sep = ", "
-						self._log.info("".join(sb))
+				#_log.debug("Updating components state ...\n" + "\n".join("\t{}".format(m.cname) for m in sorted(updated_modules)))
+				#_log.debug("Updating components state ...")
 
-				for inst in updated_instances:
-				#	self._log.debug(repr(inst))
-					inst.update_state()
+				# update affected components state
+				updated_cases = set([c.case for c in updated_components])
+				for case in updated_cases:
+					case.update_states(session)
+					case.update_count_by_state(session)
+					case.clean_components(session)
+
+				for component in updated_components:
+					case = component.case
+					#_log.debug("[{}] Component {} updated state to {} ...".format(
+					#				component.case.name, component.cname, component.state))
+
+					#if self._log.isEnabledFor(logging.INFO):
+					count = component.workitem_count_by_state
+					sb = ["[{}] {} ({})".format(component.case.name, component.cname, component.state.title)]
+					sep = " "
+					for state in runstates.STATES:
+						if state in count:
+							sb += [sep, "{}={}".format(state.symbol, count[state])]
+							if sep == " ":
+								sep = ", "
+					self._log.info("".join(sb))
+
+				session.close()
 
 			except Exception:
 				num_exc += 1
 				_log.exception("Exception in wok-engine run thread (%d)" % num_exc)
+				if num_exc > 3:
+					raise
 
 		try:
-			# print instances state before leaving the thread
-			#for inst in self._instances:
-			#	_log.debug("Instances state:\n" + repr(inst))
+			# print cases state before leaving the thread
+			#for case in self._cases:
+			#	_log.debug("Case state:\n" + repr(case))
 
 			for t in self._logs_threads:
 				t.join()
@@ -289,18 +354,15 @@ class WokEngine(Synchronizable):
 			self._join_thread.join()
 
 			_log.debug("Engine run thread finished")
-		except:
-			pass
+		except Exception as ex:
+			_log.exception(ex)
 		
 		self._running = False
 
 	def _logs(self, index):
 		"Log retrieval thread"
 
-		log_conf = self._conf.get("log")
-		if log_conf is not None:
-			log_conf = log_conf.clone().expand_vars(context = self._global_conf)
-		_log = logger.get_logger("wok.engine.logs-%d" % index, conf = log_conf)
+		_log = logger.get_logger("wok.engine.logs-{}".format(index))
 		
 		_log.debug("Engine logs thread ready")
 
@@ -312,56 +374,59 @@ class WokEngine(Synchronizable):
 			if job_info is None:
 				continue
 
-			task, job_id = job_info
+			workitem_id, job_id = job_info
 
+			session = db.Session()
+
+			task = None
 			try:
-				_log.debug("Reading logs for task %s ..." % task.id)
+				workitem = session.query(db.WorkItem).filter(db.WorkItem.id == workitem_id).one()
 
-				task.state_msg = "Reading logs"
+				case = self._cases_by_name[workitem.case.name]
+				task = case.component(workitem.task.cname)
+
+				_log.debug("[{}] Reading logs for work item {} ...".format(case.name, workitem.cname))
+
+				workitem.state_msg = "Reading logs"
+				session.commit()
+
 				output = self._platform.jobs.output(job_id)
 				if output is None:
 					output = StringIO.StringIO()
 
-				task_index = task.index
-				module = task.parent
-				module_id = module.id
-				instance_name = module.instance.name
-
-				path = os.path.join(self._work_path, "logs", instance_name, module_id)
+				path = os.path.join(self._work_path, "logs", case.name, task.cname)
 				if not os.path.isdir(path):
 					try:
 						os.makedirs(path)
 					except:
 						if not os.path.isdir(path):
 							raise
-				path = os.path.join(path, "{:08}.db".format(task_index))
+
+				path = os.path.join(path, "{:08}.db".format(workitem.index))
 				if os.path.isfile(path):
 					os.remove(path)
 
-				db = LogsDb(path)
-				db.open()
-				db.add(instance_name, module_id, task_index, output)
-				db.close()
+				logs_db = LogsDb(path)
+				logs_db.open()
+				logs_db.add(case.name, task.cname, workitem.index, output)
+				logs_db.close()
 
+				_log.debug("[{}] Done with logs of work item {}".format(case.name, workitem.cname))
 			except:
 				num_exc += 1
-				_log.exception("Exception in wok-engine logs thread (%d)" % num_exc)
+				session.rollback()
+				_log.exception("Exception in wok-engine logs thread ({})".format(num_exc))
 
 			finally:
-				_log.debug("Done with logs of task %s" % task.id)
 				self._join_queue.put(job_info)
-
-		#self._db.clean()
+				session.close()
 
 		_log.debug("Engine logs thread finished")
 
 	def _join(self):
 		"Joiner thread"
 
-		log_conf = self._conf.get("log")
-		if log_conf is not None:
-			log_conf = log_conf.clone().expand_vars(context=self._global_conf)
-		_log = logger.get_logger("wok.engine.join", conf=log_conf)
+		_log = logger.get_logger("wok.engine.join")
 
 		_log.debug("Engine join thread ready")
 
@@ -373,33 +438,66 @@ class WokEngine(Synchronizable):
 				if job_info is None:
 					continue
 
-				task, job_id = job_info
+				workitem_id, job_id = job_info
 
-				#_log.debug("Joining task %s ..." % task.id)
+				session = db.Session()
+
+				workitem = session.query(db.WorkItem).filter(db.WorkItem.id == workitem_id).one()
+
+				case = self._cases_by_name[workitem.case.name]
+				task = case.component(workitem.task.cname)
+
+				#_log.debug("Joining work item %s ..." % task.cname)
+
 				with self._lock:
-					task.job_result = self._platform.jobs.join(job_id)
-					del self._job_task_map[job_id]
-					task.state_msg = ""
+					jr = self._platform.jobs.join(job_id) # TODO per case platform
 
-					if self._single_run and len(self._job_task_map) == 0:
+					r = self._platform.data.load_workitem_result(case.name, task.cname, workitem.index)
+
+					wr = Data.element(dict(
+							hostname=jr.hostname,
+							created=jr.created.strftime(_DT_FORMAT) if jr.created is not None else None,
+							started=jr.started.strftime(_DT_FORMAT) if jr.started is not None else None,
+							finished=jr.finished.strftime(_DT_FORMAT) if jr.finished is not None else None,
+							exitcode=jr.exitcode.code))
+
+					if r is not None:
+						if r.exception is not None:
+							wr["exception"] = r.exception
+						if r.trace is not None:
+							wr["trace"] = r.trace
+
+					workitem.result = wr
+					workitem.state_msg = ""
+					session.commit()
+
+					num_workitems = session.query(db.WorkItem).filter(
+						~db.WorkItem.state.in_(runstates.TERMINAL_STATES)).count() # FIXME this should check cases state
+
+					if self._single_run and num_workitems == 0:
 						stop_engine = True
-						for inst in self._instances:
-							stop_engine = stop_engine and (inst.state in [runstates.FINISHED, runstates.FAILED])
+						for case in self._cases:
+							stop_engine = stop_engine and (case.state in runstates.TERMINAL_STATES)
 						#self._running = not stop_engine
 						if stop_engine:
 							self._finished_event.set()
 
-					_log.debug("Task %s joined" % task.id)
+					_log.debug("[{}] Joined work Item {}: {}".format(case.name, workitem.cname, wr.to_native()))
 
 					# check stopping instances
-					inst = task.instance
-					if inst in self._stopping_instances:
-						job_ids = self._stopping_instances[inst]
+					case = self._cases_by_name[workitem.case.name]
+					if case in self._stopping_cases:
+						job_ids = self._stopping_cases[case]
 						if job_id in job_ids:
 							job_ids.remove(job_id)
 						if len(job_ids) == 0:
-							del self._stopping_instances[inst]
-							inst.state = runstates.ABORTED
+							del self._stopping_cases[case]
+							workitem.case.state = case.state = runstates.ABORTED
+							session.commit()
+
+							if case.removed:
+								self.__remove_case(session, case)
+								session.commit()
 
 			except:
 				num_exc += 1
@@ -421,21 +519,12 @@ class WokEngine(Synchronizable):
 	def projects(self):
 		return self._projects
 
-	"""
-	@property
-	def flow_loader(self):
-		return self._flow_loader
-	"""
-
 	@synchronized
 	def start(self, wait=True, single_run=False):
 		self._log.info("Starting engine ...")
 
 		self._platform.start()
 		self._platform.callbacks.add(events.JOB_UPDATE, self._on_job_update)
-
-		#self._job_manager.start()
-		#self._job_manager.add_callback(self._on_job_update)
 
 		for project in self._projects:
 			self._platform.sync_project(project)
@@ -520,58 +609,92 @@ class WokEngine(Synchronizable):
 			self._lock.release()
 
 	@synchronized
-	def instances(self):
+	def cases(self):
 		instances = []
-		for inst in self._instances:
-			instances += [SynchronizedInstance(self, inst)]
+		for inst in self._cases:
+			instances += [SynchronizedCase(self, inst)]
 		return instances
 	
 	@synchronized
-	def instance(self, name):
-		inst = self._instances_map.get(name)
+	def case(self, name):
+		inst = self._cases_by_name.get(name)
 		if inst is None:
 			return None
-		return SynchronizedInstance(self, inst)
+		return SynchronizedCase(self, inst)
 
 	@synchronized
-	def create_instance(self, inst_name, conf_builder, flow_uri):
-		"Creates a new workflow instance"
+	def create_case(self, case_name, conf_builder, flow_uri): #TODO specify which platform
+		"Creates a new workflow case"
 
-		#TODO check in the db
-		if inst_name in self._instances_map:
-			raise Exception("Instance with this name already exists: {}".format(inst_name))
+		session = db.Session()
+		if session.query(db.Case).filter(db.Case.name==case_name).count() > 0:
+			raise Exception("A case with this name already exists: {}".format(case_name))
 
-		self._log.debug("Creating instance {} from {} ...".format(inst_name, flow_uri))
+		platform = self._platform
 
-		# Create instance
-		inst = Instance(inst_name, conf_builder, flow_uri, engine=self, platform=self._platform)
+		self._log.info("Creating case {} from {} ...".format(case_name, flow_uri))
+
 		try:
-			# Initialize instance and register by name
-			inst.initialize()
-			self._instances += [inst]
-			self._instances_map[inst_name] = inst
+			platform.data.remove_case(case_name)
+			platform.data.create_case(case_name)
 
-			#TODO self._storage.clean(inst)
+			case = Case(case_name, conf_builder, flow_uri, engine=self, platform=platform)
+
+			# Initialize case and register by name
+			case.initialize()
+			self._cases += [case]
+			self._cases_by_name[case_name] = case
 
 			self._cvar.notify()
 
-			#TODO self._db.instance_persist(inst)
+			case.persist(session)
 		except:
-			self._log.error("Error while creating instance {} for the workflow {} with configuration {}".format(
-				inst_name, flow_uri, conf_builder.get_conf()))
+			session.rollback()
+			self._log.error("Error while creating case {} for the workflow {} with configuration {}".format(
+				case_name, flow_uri, conf_builder.get_conf()))
 			raise
 
-		self._log.debug("\n" + repr(inst))
+		session.close()
 
-		return SynchronizedInstance(self, inst)
+		self._log.debug("\n" + repr(case))
+
+		return SynchronizedCase(self, case)
 
 	@synchronized
-	def remove_instance(self, name):
-		if name in self._instances_map:
-			inst = self._instances_map[name]
-			del self._instances_map[name]
-			self._instances.remove(inst)
+	def remove_case(self, name):
+		if name in self._cases_by_name:
+			case = self._cases_by_name[name]
+			case.removed = True
+			case.state = runstates.ABORTING
+			self._log.debug("Case {} marked for removal".format(case.name))
+		else:
+			self._log.error("Trying to remove a non existing case: {}".format(name))
 
-			self._platform.jobs.abort(job_ids=self._instance_job_ids(inst))
+		'''
+			try:
+				# retrieve job id's
+				session = db.Session()
+				job_ids = session.query(db.WorkItem.job_id)\
+								.filter(db.WorkItem.case_id == self.id)\
+								.filter(db.WorkItem.job_id != None).all()
 
-			#TODO self._storage.clean(inst)
+				# abort running jobs
+				case.platform.jobs.abort(job_ids)
+			except:
+				self._log.error("Remove case {}: Error aborting jobs.".format(name))
+
+			#TODO we need to know when the jobs finish to clean the engine log dbs and the job manager output files
+
+			try:
+				# remove data
+				case.platform.data.remove_case(case.name)
+			except:
+				self._log.error("Remove case {}: Error removing data.".format(name))
+
+			# remove engine db objects and finalize case
+			#case.remove(session)
+
+			#TODO we need to know when the jobs finish to clean the engine db objects and finalize the case
+
+			session.close()
+		'''

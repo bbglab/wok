@@ -1,4 +1,4 @@
-<flow name="main" library="edu.upf.wok.examples.subflows" version="0.1">
+<flow name="main" library="subflows" version="0.1">
 
 	<title>Main workflow</title>
 	<desc>Main workflows including sub-flows</desc>

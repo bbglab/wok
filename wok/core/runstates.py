@@ -38,9 +38,11 @@ class RunState(object):
 		return "{}({})".format(self.title, self.id)
 
 class UndefinedState(Exception):
-	def __init__(self, id=None, title=None):
+	def __init__(self, id=None, symbol=None, title=None):
 		if id is not None:
 			Exception.__init__(self, "Undefined state id: {}".format(id))
+		elif symbol is not None:
+			Exception.__init__(self, "Undefined state symbol: {}".format(symbol))
 		elif title is not None:
 			Exception.__init__(self, "Undefined state title: {}".format(title))
 		else:
@@ -57,13 +59,17 @@ RETRY = RunState(7, "retry", "RTR")
 FAILED = RunState(8, "failed", "E")
 ABORTED = RunState(9, "aborted", "A")
 
-STATES = [
-	READY, WAITING, RUNNING, PAUSED, ABORTING, FINISHED, RETRY, FAILED, ABORTED ]
+STATES = [READY, WAITING, RUNNING, PAUSED, ABORTING, FINISHED, RETRY, FAILED, ABORTED ]
+
+TERMINAL_STATES = [FINISHED, FAILED, ABORTED]
 
 __ID_MAP = {}
+__SYMBOL_MAP = {}
 __TITLE_MAP = {}
+
 for s in STATES:
 	__ID_MAP[s.id] = s
+	__SYMBOL_MAP[s.symbol] = s
 	__TITLE_MAP[s.title] = s
 
 def from_title(title):
@@ -75,3 +81,8 @@ def from_id(id):
 	if id not in __ID_MAP:
 		raise UndefinedState(id=id)
 	return __ID_MAP[id]
+
+def from_symbol(symbol):
+	if symbol not in __SYMBOL_MAP:
+		raise UndefinedState(symbol=symbol)
+	return __SYMBOL_MAP[symbol]

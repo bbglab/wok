@@ -41,8 +41,8 @@ class NativeCommmandBuilder(CommmandBuilder):
 				for k, v in self._plain_conf(value[key], path + [key]):
 					yield (k, v)
 
-	def prepare(self, task):
-		execution = task.parent.execution
+	def prepare(self, case, task, index):
+		execution = task.execution
 		exec_conf = execution.conf
 		if exec_conf is None:
 			exec_conf = Data.element()
@@ -54,7 +54,7 @@ class NativeCommmandBuilder(CommmandBuilder):
 
 		lang = exec_conf.get("language", "python")
 
-		mod_conf = task.instance.conf.clone().expand_vars()
+		mod_conf = case.conf.clone().expand_vars()
 
 		cmd_conf = mod_conf.get(COMMAND_CONF, default=Data.element)
 		#native_conf = cmd_conf.get("default", default=Data.element)
@@ -69,7 +69,7 @@ class NativeCommmandBuilder(CommmandBuilder):
 		env.merge(exec_conf.get("env"))
 
 		# Default module script path
-		flow_path = os.path.abspath(os.path.dirname(task.parent.flow_path))
+		flow_path = os.path.abspath(os.path.dirname(task.flow_path))
 		env[FLOW_PATH] = flow_path
 		env[SCRIPT_PATH] = script_path
 		env[MODULE_SCRIPT_PATH] = os.path.join(flow_path, script_path)
@@ -98,7 +98,7 @@ class NativeCommmandBuilder(CommmandBuilder):
 				script += ["source '{}'".format(os.path.join(virtualenv, "bin", "activate"))]
 			#script += ["set +x"]
 
-			#script += ["echo Running task ..."]
+			#script += ["echo Running workitem ..."]
 
 			cmd = [cmd_conf.get("python.bin", "python")]
 			cmd += [script_path if os.path.isabs(script_path) else "${}".format(MODULE_SCRIPT_PATH)]
@@ -115,14 +115,14 @@ class NativeCommmandBuilder(CommmandBuilder):
 		else:
 			raise LanguageError(lang)
 
-		cmd += ["-D", "instance_name={}".format(task.instance.name),
-				"-D", "module_path={}".format(".".join([task.parent.namespace, task.parent.name])),
-				"-D", "task_index={}".format(task.index)]
+		cmd += ["-D", "case={}".format(case.name),
+				"-D", "task={}".format(task.cname),
+				"-D", "index={}".format(index)]
 
-		#for key, value in self._storage_conf(task.instance.engine.storage.basic_conf):
+		#for key, value in self._storage_conf(workitem.case.engine.storage.basic_conf):
 		#	cmd += ["-D", "storage.{}={}".format(key, value)]
 
-		for key, value in self._plain_conf(Data.create(task.instance.platform.data.bootstrap_conf)):
+		for key, value in self._plain_conf(Data.create(case.platform.data.bootstrap_conf)):
 			cmd += ["-D", "data.{}={}".format(key, value)]
 
 		script += [" ".join(cmd)]

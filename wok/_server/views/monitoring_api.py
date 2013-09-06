@@ -19,7 +19,7 @@
 #
 ###############################################################################
 
-from wok.server.common import wok, make_json_response, make_text_response
+from wok._server.common import wok, make_json_response, make_text_response
 
 from flask import Module, abort, request
 

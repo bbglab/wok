@@ -27,7 +27,7 @@ class ExitCode(object):
 	def from_code(code):
 		if code is None:
 			return None
-		return ExitCode.__CODE_MAP[code] if code in ExitCode.__CODE_MAP else ExitCode(code, None)
+		return ExitCode.__CODE_MAP[code] if code in ExitCode.__CODE_MAP else ExitCode(code, "")
 
 	def __init__(self, code, title):
 		self.code = code

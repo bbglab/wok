@@ -5,8 +5,7 @@ from wok.config import Data
 from wok.core import events
 from wok.core.errors import ConfigMissingError
 from wok.core.callback import CallbackManager
-from wok.core.cmd import create_command_builder
-from wok.jobs import create_job_manager, JobSubmission
+from wok.jobs import create_job_manager
 from wok.data import create_data_provider
 
 class Platform(object):
@@ -29,7 +28,7 @@ class Platform(object):
 		self._name = name
 		self._conf = conf
 
-		self._log = logger.get_logger(name="wok.platform.{}".format(name), conf=conf.get("log"))
+		self._log = logger.get_logger("wok.platform.{}".format(name))
 
 		if "work_path" not in self._conf:
 			raise ConfigMissingError("work_path")
@@ -51,12 +50,17 @@ class Platform(object):
 		:return: JobManager
 		"""
 
+		"""
 		name = "mcore"
 		conf = Data.element()
 		if "jobs" in self._conf:
 			conf.merge(self._conf["jobs"])
 			if "type" in conf:
 				name = conf["type"]
+		"""
+
+		conf = self._conf.get("jobs", default=Data.element)
+		name = conf.get("type", "mcore")
 
 		if "work_path" not in conf:
 			conf["work_path"] = os.path.join(self._work_path, "jobs_{}".format(name))
@@ -73,29 +77,19 @@ class Platform(object):
 		"""
 
 		conf = self._conf.get("data", default=Data.element)
-		name = conf.get("type", "mongo")
+		name = conf.get("type", "files")
+
+		if "work_path" not in conf:
+			conf["work_path"] = os.path.join(self._work_path, "data_{}".format(name))
 
 		self._log.info("Creating '{}' data provider ...".format(name))
 		self._log.debug("Data provider configuration: {}".format(repr(conf)))
 
 		return create_data_provider(name, conf)
 
-	def _create_job_submission(self, task):
-
-		js = JobSubmission(
-			task=task, instance_id=task.parent.instance.name, task_id=task.id, task_conf=task.conf,
-			priority=max(min(task.priority, 1), 0))
-
-		execution = task.parent.execution
-		cmd_builder = create_command_builder(execution.mode)
-
-		js.script, js.env = cmd_builder.prepare(task)
-
-		return js
-
-	def _job_submissions(self, tasks):
-		for task in tasks:
-			yield self._create_job_submission(task)
+	def _filter_job_submissions(self, job_submissions):
+		for js in job_submissions:
+			yield js
 
 	def _start(self):
 		pass
@@ -104,6 +98,10 @@ class Platform(object):
 		pass
 
 	# ------------------------------------------------------------------------------------------------------------------
+
+	@property
+	def name(self):
+		return self._name
 
 	@property
 	def callbacks(self):
@@ -136,14 +134,14 @@ class Platform(object):
 
 		self._log.info("Platform '{}' started".format(self._name))
 
-	def submit(self, tasks):
+	def submit(self, job_submissions):
 		"""
-		Submit tasks. Yields tuples (JobSubmission, job id) for each task.
-		:param tasks: list or iterator of tasks
+		Submit job submissions to the job manager.
+		:param job job_submissions: iterator of JobSubmission
 		"""
-		submissions = self._job_submissions(tasks)
-		for js, job_id in self._job_manager.submit(submissions):
-			yield js, job_id
+		filtered_submissions = self._filter_job_submissions(job_submissions)
+		for submit_data in self._job_manager.submit(filtered_submissions):
+			yield submit_data
 
 	def sync_project(self, project):
 		"""

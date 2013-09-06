@@ -2,7 +2,7 @@ from random import random
 
 from wok.task import task
 
-@task.generator()
+@task.source()
 def sequence(value_port):
 	# get the configuration
 	conf = task.conf

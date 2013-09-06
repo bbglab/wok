@@ -16,7 +16,7 @@ def process(time):
 	task.logger.info("Waiting for {:.2} seconds ...".format(time))
 	sleep(time)
 
-	return time
+	task.ports("time2").send(time)
 
 task.run()
 	

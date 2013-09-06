@@ -32,9 +32,12 @@ setup(
     # installed or upgraded on the target machine
     install_requires = [
 		'docutils>=0.3',
-		'Flask==0.9',
+		'distribute>=0.6.3',
+		'SQLAlchemy==0.8.2',
 		'pygments',
-		'SQLAlchemy==0.8.1'
+		'Flask==0.10.1',
+		'Flask-Login==0.2.7',
+		'Flask-SQLAlchemy==1.0'
 	],
 
     package_data = {

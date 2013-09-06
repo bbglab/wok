@@ -20,16 +20,19 @@
 ###############################################################################
 
 import types
-import time
-from datetime import timedelta
+from datetime import datetime
+import signal
 
 from wok import logger
 from wok.config.data import Data
 from wok.config.cli import OptionsConfig
-from wok.core import exit_codes
-from wok.data import create_data_provider, Stream, DataProvider
+from wok.data import create_data_provider, Stream
 from wok.data.portref import PortDataRef, PORT_MODE_IN, PORT_MODE_OUT
 
+from wok.core.task_result import TaskResult
+
+class Abort(Exception):
+	pass
 
 class MissingRequiredPorts(Exception):
 	def __init__(self, missing_ports, mode):
@@ -47,12 +50,22 @@ class Task(object):
 	def __init__(self):
 
 		# Get task key and storage configuration
-		cmd_conf = OptionsConfig(required = ["instance_name", "module_path",
-											"task_index", "data.type"])
+		cmd_conf = OptionsConfig(required=["case", "task", "index", "data.type"])
 
-		instance_name = cmd_conf["instance_name"]
-		module_path = cmd_conf["module_path"]
-		task_index = cmd_conf["task_index"]
+		# Register signals
+		self._signal_names = {}
+		for signame in [x for x in dir(signal) if x.startswith("SIG")]:
+			try:
+				signum = getattr(signal, signame)
+				signal.signal(signum, self.__signal_handler)
+				self._signal_names[signum] = signame
+			except:
+				pass
+
+		# command line configuration
+		case_name = cmd_conf["case"]
+		task_cname = cmd_conf["task"]
+		workitem_index = cmd_conf["index"]
 
 		# initialize the data provider
 		provider_conf = cmd_conf["data"]
@@ -60,20 +73,21 @@ class Task(object):
 		self._provider.start()
 
 		# load the module and task descriptors
-		module_desc = self._provider.load_module(instance_name, module_path)
-		task_desc = self._provider.load_task(instance_name, module_path, task_index)
+		task_desc = self._provider.load_task(case_name, task_cname)
+		workitem_desc = self._provider.load_workitem(case_name, task_cname, workitem_index)
+		partition = workitem_desc["partition"]
 
 		# setup task configuration
-		self.conf = Data.create(module_desc["conf"])
-		self.conf["__task_index"] = task_index
+		self.conf = Data.create(task_desc["conf"])
+		self.conf["__task_index"] = workitem_index
 		self.conf.expand_vars()
 
 		# setup task attributes
-		self.id = task_desc["id"]
-		self.name = task_desc["name"]
-		self.module_path = task_desc["module"]
-		self.instance_name = task_desc["instance"]
-		self.index = task_index
+		self.case = workitem_desc["case"]
+		self.task = workitem_desc["task"]
+		self.id = workitem_desc["cname"]
+		self.name = workitem_desc["name"]
+		self.index = workitem_index
 
 		# initialize decorators
 		self._main = None
@@ -86,23 +100,25 @@ class Task(object):
 		self._end_time = self._start_time
 
 		# intialize task logging
-		log_conf = self.conf.get("log")
+		log_conf = self.conf.get("logging")
 		logger.initialize(log_conf)
-		self.logger = logger.get_logger(self.name, conf=log_conf)
+		self.logger = logger.get_logger(self.name)
 
-		self.logger.debug("Module descriptor: {}".format(Data.create(module_desc)))
 		self.logger.debug("Task descriptor: {}".format(Data.create(task_desc)))
+		self.logger.debug("WorkItem descriptor: {}".format(Data.create(workitem_desc)))
 
 		# Initialize input stream
-		self._stream = Stream(self._provider, module_desc["stream"])
+		self._stream = Stream(self._provider, task_desc["stream"])
 
 		# Initialize ports
 		self._ports = {}
 		self._in_ports = []
 		self._out_ports = []
 
-		if "ports" in module_desc and "ports" in task_desc:
-			port_descriptors = Data.create(module_desc["ports"])
+		self._open_ports = {}
+
+		if "ports" in task_desc and "ports" in partition:
+			port_descriptors = Data.create(task_desc["ports"])
 
 			for port_desc in port_descriptors.get("in", default=list):
 				port_desc["mode"] = PORT_MODE_IN
@@ -114,21 +130,34 @@ class Task(object):
 				self._ports[port_desc["name"]] = port_desc
 				self._out_ports += [port_desc]
 
-			port_descriptors = Data.create(task_desc["ports"])
+			port_descriptors = Data.create(partition["ports"])
 
 			for port_desc in port_descriptors.get("in", default=list):
-				mod_port_desc = self._ports[port_desc["name"]]
-				mod_port_desc["data"] = port_desc["data"]
+				task_port_desc = self._ports[port_desc["name"]]
+				task_port_desc["data"] = port_desc["data"]
 
 			for port_desc in port_descriptors.get("out", default=list):
-				mod_port_desc = self._ports[port_desc["name"]]
-				mod_port_desc["data"] = port_desc["data"]
+				task_port_desc = self._ports[port_desc["name"]]
+				task_port_desc["data"] = port_desc["data"]
+
+		# Get hostname
+		try:
+			import socket
+			self.hostname = socket.gethostname()
+		except:
+			self.hostname = "unknown"
 
 		# The context field is free to be used by the task user to
 		# save variables related with the whole task life cycle.
 		# By default it is initialized with a dictionary but can be
 		# overwrote with any value by the user. Wok will never use it.
 		self.context = {}
+
+	def __signal_handler(self, signum, frame):
+		if signum in [signal.SIGABRT, signal.SIGINT, signal.SIGTERM, signal.SIGQUIT]:
+			raise Abort(self._signal_names[signum])
+		else:
+			self.logger.warn("Received signal {0}".format(self._signal_names[signum]))
 
 	def __dot_product(self, ports):
 		names = [port["name"] for port in ports]
@@ -220,8 +249,13 @@ class Task(object):
 		return 0
 
 	def __open_port_data(self, port_desc):
+		if port_desc["name"] in self._open_ports:
+			return self._open_ports[port_desc["name"]]
+
 		data_ref = PortDataRef.create(port_desc["data"])
-		return self._provider.open_port_data(self.instance_name, data_ref)
+		port_data = self._provider.open_port_data(self.case, data_ref)
+		self._open_ports[port_desc["name"]] = port_data
+		return port_data
 
 	def __ports(self, names=None, mode=None):
 		"""
@@ -257,7 +291,7 @@ class Task(object):
 
 	def elapsed_time(self):
 		"Return the elapsed time since the beginning of the task"
-		return timedelta(seconds=time.time() - self._start_time)
+		return datetime.now() - self._start_time
 
 	def ports(self, *args, **kargs):
 		"""
@@ -301,34 +335,49 @@ class Task(object):
 
 	def run(self):
 		"Start the task execution. Remember to call this function at the end of the script !"
-		try:
-			import socket
-			hostname = socket.gethostname()
-		except:
-			hostname = "unknown"
 
-		self.logger.debug("Task {0} started on host {1}".format(self.id, hostname))
+		self.logger.debug("Task {0} started on host {1}".format(self.id, self.hostname))
 
-		self._start_time = time.time()
+		self._start_time = datetime.now()
 
+		aborted = False
+		exitcode = -1
+		exception = trace = None
 		try:
 			if self._main is not None:
 				self.logger.debug("Running [main] ...")
-				retcode = self._main()
-				if retcode is None:
-					retcode = 0
+				exitcode = self._main()
+				if exitcode is None:
+					exitcode = 0
 			else:
-				retcode = self.__default_main()
+				exitcode = self.__default_main()
 
 			self.logger.info("Elapsed time: {0}".format(self.elapsed_time()))
-		except:
-			self.logger.exception("Exception on task {0}".format(self.id))
-			retcode = exit_codes.TASK_EXCEPTION
-		finally:
-			#TODO save task results on provider
-			self._provider.close()
+		except Abort as ex:
+			self.logger.error("Task aborted with signal {0}".format(ex.args[0]))
+			aborted = True
+			import traceback
+			trace = traceback.format_exc()
+		except Exception as ex:
+			self.logger.error("Exception on task {0}".format(self.id))
+			self.logger.exception(ex)
+			exception = str(ex)
+			import traceback
+			trace = traceback.format_exc()
 
-		exit(retcode)
+		result = TaskResult(
+			hostname=self.hostname,
+			start_time=self._start_time,
+			end_time=datetime.now(),
+			exitcode=exitcode,
+			aborted=aborted,
+			exception=exception,
+			trace=trace)
+
+		self._provider.save_workitem_result(self.case, self.task, self.index, result)
+		self._provider.close()
+
+		exit(exitcode)
 		
 	def set_main(self, f):
 		"Set the main processing function."

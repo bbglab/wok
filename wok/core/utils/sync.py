@@ -1,6 +1,6 @@
 ###############################################################################
 #
-#    Copyright 2009-2011, Universitat Pompeu Fabra
+#    Copyright 2009-2013, Universitat Pompeu Fabra
 #
 #    This file is part of Wok.
 #
@@ -19,7 +19,7 @@
 #
 ###############################################################################
 
-from threading import Lock
+from threading import Lock, ThreadError
 
 def synchronized(f):
 	"""Synchronization decorator for methods of Synchronizable objects"""
@@ -34,18 +34,17 @@ def synchronized(f):
 				try:
 					#log.debug("<RELEASE %s>" % f.__name__)
 					obj._release()
-				except:
+				except ThreadError:
 					from wok.logger import get_logger
-					get_logger(name = "synchronized").error(
-						"<RELEASE ERROR %s.%s>" % (
-							obj.__class__.__name__, f.__name__))
+					logger_name = "wok.synchronized"
+					get_logger(logger_name).error("<RELEASE ERROR {}.{}>".format(obj.__class__.__name__, f.__name__))
 		return sync_function
 	return wrap(f)
 
 class Synchronizable(object):
 	"""An object that can have methods decorated with @synchronized"""
 
-	def __init__(self, lock = None):
+	def __init__(self, lock=None):
 		if lock is None:
 			lock = Lock()
 			

@@ -1,0 +1,120 @@
+<!doctype html>
+<html>
+<head>
+	<title>SignIn</title>
+
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="">
+    <meta name="author" content="">
+
+	<link rel="shortcut icon" href="{{ url_for('static', filename='favicon.ico') }}" />
+	<link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='css/bootstrap.min.css') }}"/>
+	<link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='css/persona-buttons.css') }}"/>
+
+	<style type="text/css">
+		html, body {
+			box-sizing: border-box;
+			height: 100%;
+		}
+
+		body {
+			/*padding-top: 40px;
+			padding-bottom: 40px;*/
+			background-color: #f5f5f5;
+		}
+
+		.persona {
+			width: 100%;
+			text-align: center;
+			margin: auto auto;
+			text-align: center;
+		}
+	</style>
+
+	<script type="text/javascript" src="{{ url_for('static', filename='jquery-1.7.2.min.js') }}"></script>
+	<script type="text/javascript" src="{{ url_for('static', filename='js/bootstrap.min.js') }}"></script>
+    <script src="https://login.persona.org/include.js"></script>
+
+<script type="text/javascript">
+	$(document).ready(function() {
+		{% if current_user.is_anonymous() %}
+		var userId = null;
+		{% else %}
+		var userId = "{{ current_user.id }}";
+		{% endif %}
+
+		console.info("userId=" + userId);
+
+		var next = "{{ next|default(url_for('index')) }}";
+
+		navigator.id.watch({
+			loggedInUser: userId,
+			onlogin: function(assertion) {
+				// A user has logged in! Here you need to:
+				// 1. Send the assertion to your backend for verification and to create a session.
+				// 2. Update your UI.
+				console.info("onlogin: userId=" + userId);
+				console.info("persona.signin={{ url_for('persona.signin') }}");
+				console.info("next={{ next|default(url_for('index')) }}");
+				$.ajax({
+					type: 'POST',
+					url: "{{ url_for('persona.signin') }}", // This is a URL on your website.
+					data: {assertion: assertion},
+					success: function(res, status, xhr) { window.location.replace(next); },
+					error: function(xhr, status, err) { alert("Sign in failure: " + err); }
+				});
+			},
+			onlogout: function() {
+				// A user has logged out! Here you need to:
+				// Tear down the user's session by redirecting the user or making a call to your backend.
+				// Also, make sure loggedInUser will get set to null on the next page load.
+				// (That's a literal JavaScript null. Not false, 0, or undefined. null.)
+				$.ajax({
+					type: 'GET',
+					url: "{{ url_for('persona.signout') }}", // This is a URL on your website.
+					success: function(res, status, xhr) { window.location.replace(next); },
+					error: function(xhr, status, err) { alert("Sign out failure: " + err); }
+				});
+			}
+		});
+
+		$("#signin-btn").button().click(function (event) {
+			event.preventDefault();
+			navigator.id.request();
+		});
+
+		$("#signout-btn").button().click(function (event) {
+			event.preventDefault();
+			navigator.id.logout();
+		});
+
+		$(document).ready(function() {
+			$("#persona-btn").button().click(function (event) {
+				event.preventDefault();
+				navigator.id.request();
+			});
+		});
+	});
+
+</script>
+
+	<!-- HTML5 shim, for IE6-8 support of HTML5 elements -->
+    <!--[if lt IE 9]>
+      <script src="{{ url_for('static', filename='html5.js') }}"></script>
+    <![endif]-->
+</head>
+<body>
+	<div class="container fill">
+
+		<div class="row-fluid">
+			<div class="pull-left">
+				<form class="form-sign" action="{{ url_for('persona.signin') }}" method="POST">
+					<div class="persona">
+						<button id="persona-btn" class="btn persona-button"><span>Sign in with Persona</span></button>
+					</div>
+				</form>
+			</div>
+		</div>
+	</div>
+</body>
+</html>

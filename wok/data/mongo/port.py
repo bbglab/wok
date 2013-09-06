@@ -2,63 +2,112 @@ from wok.data.port import Port
 
 class MongoInPort(Port):
 
-	def __init__(self, provider, name, coll, start, size):
-		Port.__init__(self, provider, name)
+	def __init__(self, provider, collections, start, size):
+		Port.__init__(self, provider)
 
-		self._coll = coll
+		self._collections = collections
+
 		self._start = start
 		self._size = size
 
+		self._coll_index = 0
+		self._coll_skip = 0
+		self._coll_limit = 0
 		self._cursor = None
 
 	def __iter__(self):
 		return self
+	
+	def _open(self):
+		if not self._collections:
+			raise StopIteration()
+
+		index = 0
+		start = self._start
+		coll = self._collections[0]
+		coll_size = coll.count()
+
+		while start - coll_size > 0 and index < len(self._collections):
+			index += 1
+			coll = self._collections[index]
+			start -= coll_size
+			coll_size = coll.count()
+			
+		self._coll_index = index
+		self._coll_skip = start
+		self._coll_limit = min(coll_size - start, self._size)
+
+		self._find()
+
+	def _find(self):
+		kwargs = dict()
+		if self._coll_skip > 0:
+			kwargs["skip"] = self._coll_skip
+		if self._coll_limit is not None and self._coll_limit > 0:
+			kwargs["limit"] = self._coll_limit
+		coll = self._collections[self._coll_index]
+		self._cursor = coll.find(**kwargs)
 
 	def next(self):
 		return self.read()
 
 	def read(self):
-		if self._cursor is None:
-			kwargs = dict()
-			if self._start > 0:
-				kwargs["skip"] = self._start
-			if self._size is not None and self._size > 0:
-				kwargs["limit"] = self._size
-			self._cursor = self._coll.find(**kwargs)
+		if self._size == 0:
+			raise StopIteration()
 
-		msg = self._cursor.next()
+		if self._cursor is None:
+			self._open()
+
+		msg = None
+		while msg is None:
+			try:
+				msg = self._cursor.next()
+				self._size -= 1
+			except StopIteration:
+				self._coll_index += 1
+
+				if self._coll_index == len(self._collections):
+					raise
+
+				coll = self._collections[self._coll_index]
+				coll_size = coll.size()
+				self._coll_skip = 0
+				self._coll_limit = min(coll_size, self._size)
+
+				self._find()
+
 		return msg["data"] if "data" in msg else None
 
 	def size(self):
-		return self._coll.count()
+		total_size = 0
+		for coll in self._collections:
+			total_size += coll.count()
+		return total_size # TODO cache ?
 
 	def close(self):
 		pass
 
+	def __repr__(self):
+		return "{} {}".format(self._coll_index, repr(self._collections))
+
 
 class MongoOutPort(Port):
 
-	indices = {}
-
-	def __init__(self, provider, name, coll, task_index):
-		Port.__init__(self, provider, name)
+	def __init__(self, provider, coll, workitem_index):
+		Port.__init__(self, provider)
 
 		self._coll = coll
 
-		self._task_index = task_index
+		self._workitem_index = workitem_index
 
-	def __next_index(self):
-		if self.name not in self.indices:
-			self.indices[self.name] = 0
-		next_index = self.indices[self.name]
-		self.indices[self.name] += 1
-		return next_index
+		self._next_index = 0
 
 	def send(self, data):
 		self._coll.insert(dict(
-			task=self._task_index,
-			index=self.__next_index(),
+			workitem=self._workitem_index,
+			index=self._next_index,
 			data=data))
+		self._next_index += 1
 
 	def size(self):
 		return self._coll.count()

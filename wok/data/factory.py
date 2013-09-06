@@ -1,15 +1,27 @@
 from wok import logger
 
-logger.get_logger("wok.data")
+from files import FilesProvider
 
-_DATA_PROVIDERS = {}
+_DATA_PROVIDERS = {
+	"files" : FilesProvider
+}
+
+def __log(msg, level=None):
+	from wok.logger import get_logger
+	log = get_logger(name="wok.data")
+
+	if level is None:
+		import logging
+		level = logging.WARNING
+	log.log(level, msg)
 
 try:
 	from mongo import MongoProvider
 	_DATA_PROVIDERS["mongo"] = MongoProvider
-except Exception as ex:
-	logger.warn("MondoDB data provider not available.")
-	logger.exception(ex)
+except ImportError:
+	__log("The MondoDB data provider can not be loaded.")
+	__log("This data provider is necessary only if you are going to use a MongoDB database.")
+	__log("To install it run the following command: pip install pymongo-2.5.2")
 
 def create_data_provider(name, conf):
 	if name not in _DATA_PROVIDERS:

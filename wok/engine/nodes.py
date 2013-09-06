@@ -19,7 +19,7 @@
 #
 ###############################################################################
 
-from wok.config.data import DataElement
+from wok.config.data import Data
 
 from wok.core import runstates
 
@@ -28,7 +28,8 @@ class Node(object):
 
 	_INDENT = "  "
 
-	def __init__(self, parent, namespace = ""):
+	def __init__(self, parent, namespace=""):
+		self.id = None
 		self.parent = parent
 		self.namespace = namespace
 
@@ -37,7 +38,7 @@ class Node(object):
 		raise Exception("Unimplemented")
 
 	@property
-	def id(self):
+	def cname(self):
 		if len(self.namespace) == 0:
 			return self.name
 		else:
@@ -45,15 +46,16 @@ class Node(object):
 
 	def to_element(self, e = None):
 		if e is None:
-			e = DataElement()
+			e = Data.element()
 
-		e["id"] = self.id
+		e["ns"] = self.namespace
 		e["name"] = self.name
+		e["cname"] = self.cname
 		
 		return e
 
 	def __str__(self):
-		return self.id
+		return self.cname
 
 	def __repr__(self):
 		sb = []
@@ -68,7 +70,7 @@ class Node(object):
 
 class ModelNode(Node):
 
-	def __init__(self, parent, model, namespace = ""):
+	def __init__(self, parent, model, namespace=""):
 		Node.__init__(self, parent, namespace)
 		self.model = model
 
@@ -76,12 +78,14 @@ class ModelNode(Node):
 	def name(self):
 		return self.model.name
 
-class BaseModuleNode(ModelNode):
+class ComponentNode(ModelNode):
 
-	def __init__(self, instance, parent, model, namespace=""):
+	def __init__(self, case, parent, model, namespace=""):
 		ModelNode.__init__(self, parent, model, namespace)
 
-		self.instance = instance
+		self.case = case
+
+		self._dirty = False
 
 		self.state = runstates.READY
 		self.state_msg = ""
@@ -89,17 +93,27 @@ class BaseModuleNode(ModelNode):
 		self.priority = None
 		self.priority_factor = None
 
+		self._maxpar = None
+		self._wsize = None
+
 		# set of modules that should finish before it can start
 		self.depends = set()
 
 		# set of modules it is waiting for
-		self.waiting = set()
+		self.waiting = set()#TODO remove
 
 		# set of modules to notify it has finished
 		self.notify = set()
 
-		# number of tasks of each state {<state, count>}
-		self._tasks_count_by_state = {}
+		# number of workitems for each state {<state, count>}
+		self.workitem_count_by_state = {}
+
+		# attributes
+		self.attr = Data.element()
+		if model.maxpar is not None:
+			self.attr["maxpar"] = model.maxpar
+		if model.wsize is not None:
+			self.attr["wsize"] = model.wsize
 
 		self.in_ports = []
 		self.in_port_map = {}
@@ -109,6 +123,97 @@ class BaseModuleNode(ModelNode):
 
 		self._conf = None
 		self._expanded_conf = None
+
+	@property
+	def enabled(self):
+		return self.model.enabled
+
+	@property
+	def dirty(self):
+		return self._dirty
+
+	@dirty.setter
+	def dirty(self, dirty):
+		self._dirty = dirty
+		if dirty and self.parent is not None:
+			self.parent.dirty = dirty
+
+	@property
+	def serializer(self):
+		if self.model.serializer is not None:
+			return self.model.serializer
+
+		if self.parent is not None:
+			return self.parent.serializer
+
+		return None
+
+	@property
+	def maxpar(self):
+		if self._maxpar is not None:
+			return self._maxpar
+		elif self.model.maxpar is not None:
+			return self.model.maxpar
+		elif self.parent is not None:
+			return self.parent.maxpar
+		return 0
+
+	@maxpar.setter
+	def maxpar(self, value):
+		self._maxpar = value
+
+	@property
+	def wsize(self):
+		if self._wsize is not None:
+			return self._wsize
+		elif self.model.wsize is not None:
+			return self.model.wsize
+		elif self.parent is not None:
+			return self.parent.wsize
+		return 1
+
+	@wsize.setter
+	def wsize(self, value):
+		self._wsize = value
+
+	@property
+	def conf(self):
+		if self._conf is not None:
+			return self._conf
+
+		if self.parent is None:
+			conf = self.case.conf.clone()
+		else:
+			conf = self.parent.conf.clone()
+
+		if self.model.conf is not None:
+			conf.merge(self.model.conf)
+
+		self._conf = conf
+		self._expanded_conf = None
+
+		self.case.apply_task_rules(self, conf)
+
+		return self._conf
+
+	@property
+	def expanded_conf(self):
+		if self._expanded_conf is None:
+			self._expanded_conf = self.conf.clone().expand_vars()
+
+		return self._expanded_conf
+
+	@property
+	def resources(self):
+		if self.parent is None:
+			res = Data.element()
+		else:
+			res = self.parent.resources
+
+		if self.model.resources is not None:
+			res.merge(self.model.resources)
+
+		return res
 
 	def set_in_ports(self, in_ports):
 		self.in_ports = in_ports
@@ -130,111 +235,19 @@ class BaseModuleNode(ModelNode):
 			return self.out_port_map[name]
 		return None
 
-	@property
-	def enabled(self):
-		return self.model.enabled
-
-	@property
-	def serializer(self):
-		if self.model.serializer is not None:
-			return self.model.serializer
-
-		if self.parent is not None:
-			return self.parent.serializer
-
-		return None
-
-	@property
-	def maxpar(self):
-		if self.model.maxpar is not None:
-			return self.model.maxpar
-		elif self.parent is not None:
-			return self.parent.maxpar
-		return 0
-
-	@maxpar.setter
-	def maxpar(self, value):
-		self.model.maxpar = value
-
-	@property
-	def wsize(self):
-		if self.model.wsize is not None:
-			return self.model.wsize
-		elif self.parent is not None:
-			return self.parent.wsize
-		return 1
-
-	@wsize.setter
-	def wsize(self, value):
-		self.model.wsize = value
-
-	@property
-	def conf(self):
-		if self._conf is not None:
-			return self._conf
-
-		if self.parent is None:
-			conf = self.instance.conf.clone()
-		else:
-			conf = self.parent.conf.clone()
-
-		if self.model.conf is not None:
-			conf.merge(self.model.conf)
-
-		self._conf = conf
-		self._expanded_conf = None
-
-		self.instance.apply_mod_conf_rules(self, conf)
-
-		return self._conf
-
-	@property
-	def expanded_conf(self):
-		if self._expanded_conf is None:
-			self._expanded_conf = self.conf.clone().expand_vars()
-
-		return self._expanded_conf
-
-	@property
-	def resources(self):
-		if self.parent is None:
-			conf = DataElement()
-		else:
-			conf = self.parent.resources
-
-		if self.model.resources is not None:
-			conf.merge(self.model.resources)
-
-		return conf
-
-	@property
-	def execution(self):
-		return None
-
-	@property
-	def tasks_count_by_state(self):
-		return self._tasks_count_by_state
-
-	@property
-	def has_children(self):
-		return False
-
-	@property
-	def children(self):
-		return []
-
 	def to_element(self, e = None):
 		e = ModelNode.to_element(self, e)
 		e["state"] = str(self.state)
 		e["state_msg"] = self.state_msg
 		e["priority"] = self.priority
-		e["depends"] = [m.id for m in self.depends]
-		e["waiting"] = [m.id for m in self.waiting]
-		e["notify"] = [m.id for m in self.notify]
+		e["depends"] = [m.cname for m in self.depends]
+		e["waiting"] = [m.cname for m in self.waiting]
+		e["notify"] = [m.cname for m in self.notify]
 		e["enabled"] = self.enabled
-		e["serializer"] = self.serializer
+		e["serializer"] = self.serializer #TODO remove
 		e["maxpar"] = self.maxpar
 		e["wsize"] = self.wsize
+		#e["attr"] = self.attr
 		e["conf"] = self.model.conf
 		e["resources"] = self.resources
 		e.element("tasks_count", self._tasks_count_by_state)
@@ -252,16 +265,22 @@ class BaseModuleNode(ModelNode):
 		level = ModelNode.repr_level(self, sb, level)
 		sb.extend([self._INDENT * level, "Enabled: ", str(self.enabled), "\n"])
 		sb.extend([self._INDENT * level, "State: ", str(self.state), "\n"])
+		"""
+		sb.extend([self._INDENT * level, "Attr: "])
+		self.attr.repr_level(sb, level)
+		sb.append("\n")
+		"""
+		sb.extend([self._INDENT * level, "Dirty: ", str(self.dirty), "\n"])
 		if self.priority is not None:
 			sb.extend([self._INDENT * level, "Priority: ", str(self.priority), "\n"])
 		if self.priority_factor is not None:
 			sb.extend([self._INDENT * level, "Priority factor: ", str(self.priority_factor), "\n"])
 		if self.depends is not None and len(self.depends) > 0:
-			sb.extend([self._INDENT * level, "Depends: ", ", ".join([m.id for m in self.depends]), "\n"])
+			sb.extend([self._INDENT * level, "Depends: ", ", ".join([m.cname for m in self.depends]), "\n"])
 		if self.waiting is not None and len(self.waiting) > 0:
-			sb.extend([self._INDENT * level, "Waiting: ", ", ".join([m.id for m in self.waiting]), "\n"])
+			sb.extend([self._INDENT * level, "Waiting: ", ", ".join([m.cname for m in self.waiting]), "\n"])
 		if self.notify is not None and len(self.notify) > 0:
-			sb.extend([self._INDENT * level, "Notify: ", ", ".join([m.id for m in self.notify]), "\n"])
+			sb.extend([self._INDENT * level, "Notify: ", ", ".join([m.cname for m in self.notify]), "\n"])
 		if self.model.serializer is not None:
 			sb.extend([self._INDENT * level, "Serializer: ", self.model.serializer, "\n"])
 		if self.model.conf is not None:
@@ -272,198 +291,96 @@ class BaseModuleNode(ModelNode):
 			p.repr_level(sb, level)
 		for p in self.out_ports:
 			p.repr_level(sb, level)
-		for m in self.modules:
-			m.repr_level(sb, level)
+		if not self.is_leaf:
+			for m in self.children:
+				m.repr_level(sb, level)
 		return level
 
-class FlowNode(BaseModuleNode):
-	def __init__(self, instance, parent, model, namespace=""):
-		BaseModuleNode.__init__(self, instance, parent, model, namespace)
+class BlockNode(ComponentNode):
+	def __init__(self, case, parent, model, namespace=""):
+		ComponentNode.__init__(self, case, parent, model, namespace)
 
-		# number of modules of each state {<state, count>}
-		self._modules_count_by_state = {}
+		# number of tasks for each state {<state, count>}
+		self.task_count_by_state = {}
 
-		self.modules = []
-
-	@property
-	def maxpar(self):
-		if self.model.maxpar is not None:
-			return self.model.maxpar
-		elif self.parent is not None:
-			return self.parent.maxpar
-		return 0 #self.instance.default_maxpar
-
-	@maxpar.setter
-	def maxpar(self, value):
-		self.model.maxpar = value
+		self.children = []
 
 	@property
-	def wsize(self):
-		if self.model.wsize is not None:
-			return self.model.wsize
-		elif self.parent is not None:
-			return self.parent.wsize
-		return 1 #self.instance.default_wsize
-
-	@wsize.setter
-	def wsize(self, value):
-		self.model.wsize = value
-		
-	@property
-	def execution(self):
-		return None
-
-	@property
-	def is_leaf_module(self):
+	def is_leaf(self):
 		return False
-
-	@property
-	def has_children(self):
-		return len(self.modules) > 0
-
-	@property
-	def children(self):
-		return self.modules
 
 	@property
 	def flow_path(self):
 		return self.model.path
 
-	@property
-	def modules_count_by_state(self):
-		return self.__modules_count_by_state
-
-	def update_tasks_count_by_state(self):
-		count = {}
-		for module in self.modules:
-			mcount = module.update_tasks_count_by_state()
-			for state, cnt in mcount.items():
-				s = str(state)
-				if s not in count:
-					count[s] = cnt
-				else:
-					count[s] += cnt
-		self._tasks_count_by_state = count
-		return count
-
-	def update_modules_count_by_state(self):
-		count = {}
-		for module in self.modules:
-			mcount = module.update_modules_count_by_state()
-			for state, cnt in mcount.items():
-				s = str(state)
-				if s not in count:
-					count[s] = cnt
-				else:
-					count[s] += cnt
-		self._modules_count_by_state = count
-		return count
-
 	def to_element(self, e = None):
-		e = BaseModuleNode.to_element(self, e)
-		mlist = e.list("modules")
-		for module in self.modules:
-			mlist.append(module.to_element())
+		e = ComponentNode.to_element(self, e)
+		components = e.list("components")
+		for node in self.children:
+			components.append(node.to_element())
 
-		e.element("modules_count", self._modules_count_by_state)
+		e.element("count_by_state", self._component_count_by_state)
 		return e
 
-class LeafModuleNode(BaseModuleNode):
-	def __init__(self, instance, parent, model, namespace=""):
-		BaseModuleNode.__init__(self, instance, parent, model, namespace)
+class TaskNode(ComponentNode):
+	def __init__(self, case, parent, model, namespace=""):
+		ComponentNode.__init__(self, case, parent, model, namespace)
 
-		self.tasks = []
+		#self.tasks = []
+		self.workitems_count = 0
 
 	@property
 	def execution(self):
 		return self.model.execution
 
 	@property
-	def is_leaf_module(self):
+	def is_leaf(self):
 		return True
-
-	@property
-	def modules(self):
-		return []
-
-	@property
-	def has_children(self):
-		return len(self.tasks) > 0
-
-	@property
-	def children(self):
-		return self.tasks
 
 	@property
 	def flow_path(self):
 		return self.parent.flow_path
 
-	def update_tasks_count_by_state(self):
-		count = {}
-		for task in self.tasks:
-			s = str(task.state)
-			if s not in count:
-				count[s] = 1
-			else:
-				count[s] += 1
-		self._tasks_count_by_state = count
-		return count
-
-	def update_modules_count_by_state(self):
-		return { str(self.state) : 1 }
-	
 	def repr_level(self, sb, level):
-		level = BaseModuleNode.repr_level(self, sb, level)
-		sb.extend([self._INDENT * level, "Tasks: ", str(len(self.tasks)), "\n"])
-		level += 1
-		tasks_by_state = {}
-		for t in self.tasks:
-			if t.state not in tasks_by_state:
-				tasks_by_state[t.state] = 1
-			else:
-				tasks_by_state[t.state] += 1
-		for state in sorted(tasks_by_state, key=lambda s: s.id):
-			sb.extend([self._INDENT * level, str(state), ": ", str(tasks_by_state[state]), "\n"])
-		return level - 1
+		level = ComponentNode.repr_level(self, sb, level)
+		#TODO REMOVE sb.extend([self._INDENT * level, "WorkItems: ", str(self.workitems_count), "\n"])
+		if len(self.workitem_count_by_state) > 0:
+			sb.extend([self._INDENT * level, "WorkItems:\n"])
+			level += 1
+			for state in sorted(self.workitem_count_by_state, key=lambda s: s.id):
+				sb.extend([self._INDENT * level, str(state), ": ", str(self.workitem_count_by_state[state]), "\n"])
+			level -= 1
+		return level
 
-class TaskNode(Node):
-	def __init__(self, parent, index):
-		Node.__init__(self, parent, namespace="")
+class WorkItemNode(Node):
+	def __init__(self, parent, index, id=None, namespace="", state=runstates.READY, state_msg="", partition=None):
+		Node.__init__(self, parent, namespace=namespace)
+
+		self.id = id
 
 		self.index = index
 
-		self.state = runstates.READY
-		self.state_msg = ""
+		self.state = state
+		self.state_msg = state_msg
 
-		self.in_port_data = []
-		self.out_port_data = []
+		self.partition = partition or Data.element()
 
 		self.job_id = None
 		self.job_result = None
 
 	@property
-	def instance(self):
-		return self.parent.instance
-
-	@property
 	def name(self):
-		return "{}-{:04}".format(self.parent.id, self.index)
-
-	@property
-	def id(self):
-		return "{}-{}".format(self.instance.name, self.name)
+		return "{}-{:08}".format(self.parent.name, self.index)
 
 	@property
 	def priority(self):
-		return self.parent.priority + (self.index / self.parent.priority_factor * 10.0)
+		return max(min(self.parent.priority + (self.index / self.parent.priority_factor * 10.0), 1), 0)
 
-	@property
-	def conf(self):
-		return self.parent.conf
-
-	@property
-	def expanded_conf(self):
-		return self.parent.expanded_conf
+	def repr_level(self, sb, level):
+		level = Node.repr_level(self, sb, level)
+		sb.extend([self._INDENT * level, "Index: ", str(self.index), "\n"])
+		sb.extend([self._INDENT * level, "State: ", str(self.state), "\n"])
+		sb.extend([self._INDENT * level, "Partition: ", repr(self.partition), "\n"])
 
 class PortNode(ModelNode):
 	def __init__(self, parent, model, namespace=""):
@@ -475,6 +392,7 @@ class PortNode(ModelNode):
 	def mode(self):
 		return self.model.mode
 
+	#TODO remove
 	@property
 	def serializer(self):
 		if self.model.serializer is not None:
@@ -488,7 +406,7 @@ class PortNode(ModelNode):
 		return self.parent.wsize
 
 	def __str__(self):
-		return self.id
+		return self.cname
 
 	def repr_level(self, sb, level):
 		level = ModelNode.repr_level(self, sb, level)

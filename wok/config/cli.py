@@ -71,7 +71,7 @@ class ConfigFile(object):
 			from wok import logger
 			msg = ["Error loading configuration from ",
 					self.path, ":\n\n", str(e), "\n"]
-			logger.get_logger("config").error("".join(msg))
+			logger.get_logger("wok.config").error("".join(msg))
 			raise
 
 
@@ -199,10 +199,9 @@ class OptionsConfig(DataElement):
 
 			self.builder.add_value(d[0], d[1])
 
-		# Load projects
+		# Projects
 
-		projects = self._load_projects(self.options.projects)
-		self.builder.add_element("wok.projects", projects)
+		self.builder.add_element("wok.projects", self.options.projects)
 
 		# Build configuration
 
@@ -213,29 +212,6 @@ class OptionsConfig(DataElement):
 
 		if expand_vars:
 			self.expand_vars()
-
-	def _load_projects(self, paths):
-		projects = Data.list()
-		for path in paths:
-			if not os.path.isabs(path):
-				path = os.path.abspath(path)
-
-			if os.path.isfile(path):
-				project_file = os.path.basename(path)
-				path = os.path.dirname(path)
-			else:
-				project_file = os.path.join(path, "project.conf")
-
-			if not os.path.exists(project_file):
-				raise Exception("Project configuration not found: {}".format(path))
-
-			project_conf = Data.element()
-			cfg = ConfigFile(project_file)
-			cfg.merge_into(project_conf)
-			project_conf["path"] = path
-			projects += [project_conf]
-
-		return projects
 
 	def check_required(self, required):
 		for name in required:

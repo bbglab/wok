@@ -19,6 +19,8 @@
 #
 ###############################################################################
 
+from wok.config.data import Data
+
 PORT_MODE_IN = 1
 PORT_MODE_OUT = 2
 
@@ -72,7 +74,7 @@ class _BaseModule(_BasePort):
 	def __init__(self, name, title = "", desc = "", enabled = True,
 					serializer = None, wsize = None,
 					maxpar = None, conf = None, in_ports = None, out_ports = None,
-					resources = None):
+					resources = None, params = None):
 		_BasePort.__init__(self, name, title, desc, enabled, serializer, wsize)
 
 		self.maxpar = maxpar
@@ -94,8 +96,13 @@ class _BaseModule(_BasePort):
 			for p in out_ports:
 				self.out_port_map[p.name] = p
 
+		if resources is None:
+			resources = Data.element()
 		self.resources = resources
-		self.params = []
+
+		if params is None:
+			params = []
+		self.params = params
 
 	def add_in_port(self, port):
 		self.in_ports += [port]
@@ -129,7 +136,7 @@ class Flow(_BaseModule):
 	def __init__(self, name, title = "", desc = "", enabled = True,
 					serializer = None, wsize = None,
 					maxpar = None, conf = None, in_ports = None, out_ports = None,
-					path = None, library = None, modules = None):
+					path = None, library = None, version = None, modules = None):
 		_BaseModule.__init__(self, name, title, desc, enabled, serializer, wsize, maxpar, conf, in_ports, out_ports)
 
 		self.project = None
@@ -137,6 +144,7 @@ class Flow(_BaseModule):
 		self.path = path
 
 		self.library = library
+		self.version = version
 
 		if modules is None:
 			self.modules = []
