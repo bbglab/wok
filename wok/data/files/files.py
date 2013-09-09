@@ -71,11 +71,9 @@ class FilesProvider(DataProvider):
 		case_path = self.__case_path(case_name, create=True)
 
 	def remove_case(self, case_name):
-		print "remove_case({})".format(case_name)
 		case_path = self.__case_path(case_name, create=False)
-		print case_path
 		if os.path.exists(case_path):
-			print "rm_tree"
+			self._log.debug("Removing data for case {} from {} ...".format(case_name, case_path))
 			shutil.rmtree(case_path)
 
 	def save_task(self, task):
@@ -110,8 +108,11 @@ class FilesProvider(DataProvider):
 	def load_workitem_result(self, case_name, task_cname, index):
 		workitems_path = self.__workitems_path(case_name, task_cname)
 		file_name = "{:08}-result.json".format(index)
-		with open(os.path.join(workitems_path, file_name), "r") as f:
-			return TaskResult.from_native(json.load(f))
+		try:
+			with open(os.path.join(workitems_path, file_name), "r") as f:
+				return TaskResult.from_native(json.load(f))
+		except:
+			return TaskResult()
 
 	def open_port_data(self, case_name, data_ref):
 		if data_ref.mode == PORT_MODE_IN:

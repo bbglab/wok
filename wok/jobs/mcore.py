@@ -133,13 +133,17 @@ class McoreJobManager(JobManager):
 					job.finished = datetime.now()
 
 					if process.poll() is None: # and (self._kill_threads or job.state != runstates.RUNNING):
-						self._log.warn("Killing task {} ...".format(job.name))
+						self._log.warn("Killing job [{}] {} ...".format(job.id, job.name))
 						process.terminate()
 						while process.poll() is None:
 							time.sleep(1)
 
 						job.state = runstates.ABORTED
 						job.exitcode = process.returncode
+
+					elif job.state is runstates.ABORTING:
+						job.state = runstates.ABORTED
+
 					else:
 						job.state = runstates.FINISHED if process.returncode == 0 else runstates.FAILED
 						job.exitcode = process.returncode
@@ -155,11 +159,11 @@ class McoreJobManager(JobManager):
 						os.remove(script_path)
 
 				if job.state == runstates.FINISHED:
-					self._log.debug("Task finished [{}] {}".format(job.id, job.name))
+					self._log.debug("Job finished [{}] {}".format(job.id, job.name))
 				elif job.state == runstates.ABORTED:
-					self._log.debug("Task aborted [{}] {}".format(job.id, job.name))
+					self._log.debug("Job aborted [{}] {}".format(job.id, job.name))
 				else:
-					self._log.debug("Task failed [{}] {}".format(job.id, job.name))
+					self._log.debug("Job failed [{}] {}".format(job.id, job.name))
 
 				self._update_job(session, job)
 

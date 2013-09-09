@@ -85,6 +85,8 @@ class ComponentNode(ModelNode):
 
 		self.case = case
 
+		self.started = self.finished = None
+
 		self._dirty = False
 
 		self.state = runstates.READY

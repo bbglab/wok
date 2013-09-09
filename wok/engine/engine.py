@@ -20,6 +20,7 @@
 ###############################################################################
 
 import os
+import shutil
 import StringIO
 import logging
 from Queue import Queue, Empty
@@ -187,20 +188,24 @@ class WokEngine(Synchronizable):
 
 		self._log.info("Removing case {} ...".format(case.name))
 
-		del self._cases_by_name[name]
+		del self._cases_by_name[case.name]
 		self._cases.remove(case)
 
 		#TODO clean the job manager output files
 
 		try:
-			shutil.rmtree(os.path.join(self._work_path, "logs", case.name))
+			self._log.debug("  * logs ...")
+			logs_path = os.path.join(self._work_path, "logs", case.name)
+			shutil.rmtree(logs_path)
 		except:
-			pass
+			self._log.exception("Error removing logs at {}".format(logs_path))
 
 		# remove data
+		self._log.debug("  * data ...")
 		case.platform.data.remove_case(case.name)
 
 		# remove engine db objects and finalize case
+		self._log.debug("  * database ...")
 		case.remove(session)
 
 	# threads ----------------------
@@ -269,8 +274,9 @@ class WokEngine(Synchronizable):
 				# check stopping instances
 				for case in self._cases:
 					if case.state == runstates.ABORTING and case not in self._stopping_cases:
-						job_ids = session.query(db.WorkItem.job_id).filter(db.WorkItem.case_id == case.id).all()
-						if len(job_ids) == 0:
+						num_job_ids = session.query(db.WorkItem.job_id).filter(db.WorkItem.case_id == case.id)\
+											.filter(~db.WorkItem.state.in_(runstates.TERMINAL_STATES)).count()
+						if num_job_ids == 0:
 							dbcase = session.query(db.Case).filter(db.Case.id == case.id)
 							dbcase.state = case.state = runstates.ABORTED
 							session.commit()
@@ -279,7 +285,11 @@ class WokEngine(Synchronizable):
 								self.__remove_case(session, case)
 								session.commit()
 						else:
-							_log.info("Stopping {} jobs for case {} ...".format(len(job_ids), case.name))
+							_log.info("Stopping {} jobs for case {} ...".format(num_job_ids, case.name))
+							job_ids = [int(r[0]) for r in session.query(db.WorkItem.job_id)
+															.filter(db.WorkItem.case_id == case.id)\
+															.filter(~db.WorkItem.state.in_(runstates.TERMINAL_STATES))]
+
 							self._stopping_cases[case] = set(job_ids)
 							case.platform.jobs.abort(job_ids)
 
@@ -290,7 +300,7 @@ class WokEngine(Synchronizable):
 					try:
 						workitem = session.query(db.WorkItem).filter(db.WorkItem.job_id == job_id).one()
 					except NoResultFound:
-						_log.warn("No work item available for the job {0} while retrieving state".format(job_id))
+						_log.warn("No work-item available for the job {0} while retrieving state".format(job_id))
 						self._platform.jobs.abort(job_id)
 						self._platform.jobs.join(job_id)
 						continue
@@ -307,7 +317,7 @@ class WokEngine(Synchronizable):
 						if state in runstates.TERMINAL_STATES:
 							self._logs_queue.put((workitem.id, job_id))
 
-						_log.debug("[{}] Work Item {} changed state to {}".format(case.name, workitem.cname, state))
+						_log.debug("[{}] Work-Item {} changed state to {}".format(case.name, workitem.cname, state))
 
 				#_log.debug("Updating components state ...\n" + "\n".join("\t{}".format(m.cname) for m in sorted(updated_modules)))
 				#_log.debug("Updating components state ...")
@@ -325,6 +335,7 @@ class WokEngine(Synchronizable):
 					#				component.case.name, component.cname, component.state))
 
 					#if self._log.isEnabledFor(logging.INFO):
+					tcount = component.case.task_count_by_state
 					count = component.workitem_count_by_state
 					sb = ["[{}] {} ({})".format(component.case.name, component.cname, component.state.title)]
 					sep = " "
@@ -333,6 +344,14 @@ class WokEngine(Synchronizable):
 							sb += [sep, "{}={}".format(state.symbol, count[state])]
 							if sep == " ":
 								sep = ", "
+					sb += [" ::"]
+					sep = " "
+					for state in runstates.STATES:
+						if state in tcount:
+							sb += [sep, "{}={}".format(state.symbol, tcount[state])]
+							if sep == " ":
+								sep = ", "
+
 					self._log.info("".join(sb))
 
 				session.close()
@@ -385,7 +404,7 @@ class WokEngine(Synchronizable):
 				case = self._cases_by_name[workitem.case.name]
 				task = case.component(workitem.task.cname)
 
-				_log.debug("[{}] Reading logs for work item {} ...".format(case.name, workitem.cname))
+				_log.debug("[{}] Reading logs for work-item {} ...".format(case.name, workitem.cname))
 
 				workitem.state_msg = "Reading logs"
 				session.commit()
@@ -411,7 +430,7 @@ class WokEngine(Synchronizable):
 				logs_db.add(case.name, task.cname, workitem.index, output)
 				logs_db.close()
 
-				_log.debug("[{}] Done with logs of work item {}".format(case.name, workitem.cname))
+				_log.debug("[{}] Done with logs of work-item {}".format(case.name, workitem.cname))
 			except:
 				num_exc += 1
 				session.rollback()
@@ -447,7 +466,7 @@ class WokEngine(Synchronizable):
 				case = self._cases_by_name[workitem.case.name]
 				task = case.component(workitem.task.cname)
 
-				#_log.debug("Joining work item %s ..." % task.cname)
+				#_log.debug("Joining work-item %s ..." % task.cname)
 
 				with self._lock:
 					jr = self._platform.jobs.join(job_id) # TODO per case platform
@@ -459,7 +478,7 @@ class WokEngine(Synchronizable):
 							created=jr.created.strftime(_DT_FORMAT) if jr.created is not None else None,
 							started=jr.started.strftime(_DT_FORMAT) if jr.started is not None else None,
 							finished=jr.finished.strftime(_DT_FORMAT) if jr.finished is not None else None,
-							exitcode=jr.exitcode.code))
+							exitcode=jr.exitcode.code if jr.exitcode is not None else None))
 
 					if r is not None:
 						if r.exception is not None:
@@ -482,7 +501,7 @@ class WokEngine(Synchronizable):
 						if stop_engine:
 							self._finished_event.set()
 
-					_log.debug("[{}] Joined work Item {}: {}".format(case.name, workitem.cname, wr.to_native()))
+					_log.debug("[{}] Joined work-item {}: {}".format(case.name, workitem.cname, wr.to_native()))
 
 					# check stopping instances
 					case = self._cases_by_name[workitem.case.name]
@@ -621,6 +640,10 @@ class WokEngine(Synchronizable):
 		if inst is None:
 			return None
 		return SynchronizedCase(self, inst)
+
+	@synchronized
+	def exists_case(self, name):
+		return name in self._cases_by_name
 
 	@synchronized
 	def create_case(self, case_name, conf_builder, flow_uri): #TODO specify which platform

@@ -44,6 +44,7 @@ class Group(Base):
 
 class Case(Base):
 	__tablename__ = "cases"
+	__table_args__ = {'sqlite_autoincrement': True}
 
 	id = Column(Integer, primary_key=True)
 

@@ -215,8 +215,7 @@ class JobManager(object):
 				job = session.query(self.job_class).filter(self.job_class.id == job_id).first()
 
 				if job is None:
-					session.close()
-					return
+					continue
 
 				self._log.debug("Aborting job [{}] {} ...".format(job.id, job.name))
 

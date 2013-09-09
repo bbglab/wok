@@ -112,9 +112,9 @@ class MongoProvider(DataProvider):
 		workitem_result_coll = self.__workitem_result_collection(case_name)
 		result = workitem_result_coll.find_one({"_id" : "{}-{:08}".format(task_cname, index)})
 		if result is not None:
-			del result["_id"]
-			result = TaskResult.from_native(result)
-		return result
+			return TaskResult.from_native(result)
+		else:
+			return TaskResult()
 
 	def open_port_data(self, case_name, data_ref):
 		if data_ref.mode == PORT_MODE_IN:

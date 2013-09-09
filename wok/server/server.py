@@ -1,5 +1,6 @@
 import os
 
+from uuid import uuid4
 from threading import Lock
 
 from flask import Flask, redirect, url_for, current_app, session
@@ -191,7 +192,10 @@ class WokServer(object):
 		session.add(case)
 		session.commit()
 
-		engine_case_name = "{}-{}".format(user.nick, case.id)
+		engine_case_name = "{}-{}".format(user.nick, uuid4().hex[-6:])
+		while self.engine.exists_case(engine_case_name):
+			engine_case_name = "{}-{}".format(user.nick, uuid4().hex[-6:])
+
 		engine_case = self.engine.create_case(engine_case_name, conf_builder, flow_uri)
 
 		case.created=engine_case.created

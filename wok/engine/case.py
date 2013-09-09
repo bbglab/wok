@@ -53,7 +53,6 @@ class Case(object):
 		self.title = name
 
 		self.created = datetime.now()
-		self.running_time = timedelta()
 		
 		self.conf = None
 		self.conf_builder = ConfigBuilder()
@@ -183,7 +182,9 @@ class Case(object):
 		return c
 
 	def remove(self, session):
-		session.query(db.Component).filter(db.Component.case_id == case.id).delete()
+		cmps = session.query(db.Component.id).filter(db.Component.case_id == self.id).subquery()
+		session.query(db.Task).filter(db.Task.id.in_(cmps)).delete(synchronize_session='fetch')
+		session.query(db.Block).filter(db.Block.id.in_(cmps)).delete(synchronize_session='fetch')
 		session.query(db.Case).filter(db.Case.id == self.id).delete()
 		session.query(db.WorkItem).filter(db.WorkItem.case_id == self.id).delete()
 
@@ -782,6 +783,15 @@ class Case(object):
 				if component in notify_component.waiting:
 					notify_component.waiting.remove(component)
 
+		if state == runstates.RUNNING:
+			component.started = datetime.now()
+			component.finished = None
+
+		if state in runstates.TERMINAL_STATES:
+			component.finished = datetime.now()
+			if component.started is None:
+				component.started = component.finished
+
 	def update_states(self, session, component=None):
 		if component is None:
 			component = self.root_node
@@ -817,9 +827,9 @@ class Case(object):
 			winner_states = [
 				runstates.ABORTING,
 				runstates.ABORTED,
+				runstates.FAILED,
 				runstates.RUNNING,
 				runstates.WAITING,
-				runstates.FAILED,
 				runstates.PAUSED,
 				runstates.READY]
 
@@ -858,32 +868,31 @@ class Case(object):
 				workitem_count_by_state = component.workitem_count_by_state
 		else:
 			# count children only if there is some dirty child
-			#if sum([1 if c.dirty else 0 for c in component.children]) > 0:
-			if component.dirty:
-				for child in component.children:
-					child_task_count, child_workitem_count = self.update_count_by_state(session, child)
+			#if component.dirty:
+			for child in component.children:
+				child_task_count, child_workitem_count = self.update_count_by_state(session, child)
 
-					if child.is_leaf:
-						state = child.state
-						if state not in task_count_by_state:
-							task_count_by_state[state] = 1
-						else:
-							task_count_by_state[state] += 1
+				if child.is_leaf:
+					state = child.state
+					if state not in task_count_by_state:
+						task_count_by_state[state] = 1
 					else:
-						for state, count in child_task_count.items():
-							if state not in task_count_by_state:
-								task_count_by_state[state] = count
-							else:
-								task_count_by_state[state] += count
-
-					for state, count in child_workitem_count.items():
-						if state not in workitem_count_by_state:
-							workitem_count_by_state[state] = count
+						task_count_by_state[state] += 1
+				else:
+					for state, count in child_task_count.items():
+						if state not in task_count_by_state:
+							task_count_by_state[state] = count
 						else:
-							workitem_count_by_state[state] += count
-			else:
-				task_count_by_state = component.task_count_by_state
-				workitem_count_by_state = component.workitem_count_by_state
+							task_count_by_state[state] += count
+
+				for state, count in child_workitem_count.items():
+					if state not in workitem_count_by_state:
+						workitem_count_by_state[state] = count
+					else:
+						workitem_count_by_state[state] += count
+			#else:
+			#	task_count_by_state = component.task_count_by_state
+			#	workitem_count_by_state = component.workitem_count_by_state
 
 		component.task_count_by_state = task_count_by_state
 		component.workitem_count_by_state = workitem_count_by_state
@@ -981,6 +990,21 @@ class Case(object):
 
 	# --------------------------------------------
 
+	@property
+	def started(self):
+		return self.root_node.started
+
+	@property
+	def finished(self):
+		return self.root_node.finished
+
+	@property
+	def elapsed(self):
+		if self.root_node.started is not None and self.root_node.finished is not None:
+			return self.root_node.finished - self.root_node.started
+		else:
+			return None
+
 	def component(self, cname):
 		"Returns a component by its cname. If the component doesn't exist raises an exception."
 
@@ -989,6 +1013,7 @@ class Case(object):
 
 		return self._component_by_cname[cname]
 
+	@property
 	def task_count_by_state(self):
 		return self.root_node.task_count_by_state
 
@@ -1067,14 +1092,15 @@ class SynchronizedCase(Synchronizable):
 		self.__case = case;
 
 	def __getattr__(self, name):
-		if name in ["name", "title", "state", "created", "running_time"]:
+		if name in ["name", "title", "state", "created", "started", "finished", "elapsed"]:
 			return getattr(self.__case, name)
 		else:
 			return AttributeError(name)
 
+	@property
 	@synchronized
 	def task_count_by_state(self):
-		return self.__case.task_count_by_state()
+		return self.__case.task_count_by_state
 
 	#FIXME
 	@synchronized
