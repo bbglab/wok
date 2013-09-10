@@ -178,7 +178,9 @@ class WokServer(object):
 	# Cases ------------------------------------------------------------------------------------------------------------
 
 	def exists_case(self, user, case_name):
-		return Case.query.filter(Case.owner_id == user.id, Case.name == case_name).count() > 0
+		engine_case_name = "{}-{}".format(user.nick, case_name)
+		exists_in_db = lambda: Case.query.filter(Case.owner_id == user.id, Case.name == case_name).count() > 0
+		return self.engine.exists_case(engine_case_name) or exists_in_db()
 
 	def create_case(self, user, case_name, conf_builder, flow_uri, properties=None, start=True):
 		case = Case(
@@ -192,14 +194,14 @@ class WokServer(object):
 		session.add(case)
 		session.commit()
 
-		engine_case_name = "{}-{}".format(user.nick, uuid4().hex[-6:])
-		while self.engine.exists_case(engine_case_name):
-			engine_case_name = "{}-{}".format(user.nick, uuid4().hex[-6:])
+		engine_case_name = "{}-{}".format(user.nick, case_name)
+		#while self.engine.exists_case(engine_case_name):
+		#	engine_case_name = "{}-{}".format(user.nick, uuid4().hex[-6:])
 
 		engine_case = self.engine.create_case(engine_case_name, conf_builder, flow_uri)
 
-		case.created=engine_case.created
-		case.engine_name=engine_case_name
+		case.created = engine_case.created
+		case.engine_name = engine_case_name
 		session.commit()
 
 		if start:
@@ -209,6 +211,7 @@ class WokServer(object):
 
 	def remove_case(self, case):
 		self.engine.remove_case(case.engine_name)
+		# FIXME remove when the remove signal arrives !!!
 		session = db.Session()
 		session.delete(case)
 		session.commit()

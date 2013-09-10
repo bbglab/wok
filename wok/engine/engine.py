@@ -344,6 +344,7 @@ class WokEngine(Synchronizable):
 							sb += [sep, "{}={}".format(state.symbol, count[state])]
 							if sep == " ":
 								sep = ", "
+					"""
 					sb += [" ::"]
 					sep = " "
 					for state in runstates.STATES:
@@ -351,6 +352,7 @@ class WokEngine(Synchronizable):
 							sb += [sep, "{}={}".format(state.symbol, tcount[state])]
 							if sep == " ":
 								sep = ", "
+					"""
 
 					self._log.info("".join(sb))
 

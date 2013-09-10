@@ -170,7 +170,7 @@ def get_smtp_handler(conf):
 
 	format = conf.get("format")
 	if format is not None:
-		if isinstance(format, DataList):
+		if Data.is_list(format):
 			format = "".join(format.to_native())
 		handler.setFormatter(logging.Formatter(format))
 

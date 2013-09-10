@@ -100,7 +100,7 @@ class Task(object):
 		self._end_time = self._start_time
 
 		# intialize task logging
-		log_conf = self.conf.get("logging")
+		log_conf = self.conf.get("wok.logging")
 		logger.initialize(log_conf)
 		self.logger = logger.get_logger(self.name)
 

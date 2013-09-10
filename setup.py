@@ -36,8 +36,7 @@ setup(
 		'SQLAlchemy==0.8.2',
 		'pygments',
 		'Flask==0.10.1',
-		'Flask-Login==0.2.7',
-		'Flask-SQLAlchemy==1.0'
+		'Flask-Login==0.2.7'
 	],
 
     package_data = {
