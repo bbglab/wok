@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Text, String, Integer, Boolean, DateTime, ForeignKey
 from sqlalchemy.orm import relationship, backref
 
-from flask.ext.login import UserMixin, AnonymousUser
+from flask.ext.login import UserMixin
 
 from wok.core.db.customtypes import Config
 
@@ -31,9 +31,6 @@ class User(Base, UserMixin):
 		if self.email is not None:
 			sb += ["<{}>".format(self.email)]
 		return " ".join(sb)
-
-class Anonymous(AnonymousUser):
-	name = u"Anonymous"
 
 class Group(Base):
 	__tablename__ = "groups"
