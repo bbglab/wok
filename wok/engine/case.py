@@ -783,7 +783,7 @@ class Case(object):
 				if component in notify_component.waiting:
 					notify_component.waiting.remove(component)
 
-		if state == runstates.RUNNING:
+		if state == runstates.RUNNING and component.started is None:
 			component.started = datetime.now()
 			component.finished = None
 

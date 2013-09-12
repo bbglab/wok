@@ -20,6 +20,7 @@
 ###############################################################################
 
 import logging
+import logging.handlers
 
 from wok.config.data import Data
 
@@ -39,7 +40,7 @@ _log_level_map = {
 
 _initialized = False
 
-def initialize(conf=None, format=None, datefmt=None):
+def initialize(conf=None, format=None, datefmt=None, level=None):
 	"""
 	Initialize the logging system.
 
@@ -77,6 +78,9 @@ def initialize(conf=None, format=None, datefmt=None):
 	for (log_name, log_conf) in loggers_conf:
 		init_logger(log_name, conf=log_conf)
 
+	if level is not None:
+		init_logger("", conf=level)
+
 	_initialized = True
 
 def get_level(level):
@@ -107,6 +111,27 @@ def get_logger(name="", level=None, conf=None):
 	return logger
 
 def init_logger(logger, conf):
+	"""
+	Initializa a logger from configuration. Configuration can be:
+	- An string referring to the log level
+	- A dictionary with the following parameters:
+	  - level: log level
+	  - handlers: List of log handlers or just a handler. Each handler have the following parameters:
+	    - type
+	    - ...: each handler type has a set of parameters
+
+	Supported handlers:
+	- smtp: Send logs by email. Parameters:
+	  - host
+	  - port (optional)
+	  - user
+	  - pass
+	  - from
+	  - to
+	  - subject
+	  - level
+	  - format: can be a simple string or a list of strings that will be joint with '\n'
+	"""
 	if isinstance(logger, basestring):
 		logger = get_logger(logger)
 
@@ -123,7 +148,7 @@ def init_logger(logger, conf):
 	if Data.is_element(handlers_conf):
 		handlers_conf = Data.list([handlers_conf])
 
-	for index, handler_conf in enumerate(handlers_conf):
+	for handler_conf in handlers_conf:
 		handler = get_handler(logger, handler_conf)
 		logger.addHandler(handler)
 

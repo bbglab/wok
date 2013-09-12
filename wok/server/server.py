@@ -3,6 +3,9 @@ import os
 from uuid import uuid4
 from threading import Lock
 
+from sqlalchemy import inspect
+from blinker import Signal
+
 from flask import Flask, redirect, url_for, current_app, session
 
 from flask.ext.login import LoginManager
@@ -16,7 +19,7 @@ from wok.config.data import Data
 from wok.engine import WokEngine
 
 import db
-from model import User, Case
+from model import User, Group, Case, USERS_GROUP
 
 import core
 
@@ -30,37 +33,40 @@ class WokFlask(Flask):
 
 
 class WokServer(object):
-	def __init__(self, conf, flask_app=None):
-		self.conf = conf
-		self.flask = flask_app
+
+	# signals
+
+	case_removed = Signal()
+
+
+	def __init__(self):
+		self.flask = None
 		self.engine = None
 		self.lock = Lock()
 
-		self._work_path = self.conf.get("wok.work_path", os.path.join(os.getcwd(), "wok-files"))
-		if not os.path.exists(self._work_path):
-			os.makedirs(self._work_path)
-
 		self._initialized = False
 
-		self._endpoints = {}
+		self._work_path = None
 
-		self._logger = logger.get_logger("wok.server")
+		self._endpoints = {} # TODO remove
+
+		self.logger = logger.get_logger("wok.server")
 
 	def _generate_secret_key(self):
 		path = os.path.join(self._work_path, "secret_key.bin")
 
 		if not os.path.exists(path):
-			self._logger.info("Generating a new secret key ...")
+			self.logger.info("Generating a new secret key ...")
 			secret_key = os.urandom(24)
 			with open(path, "wb") as f:
 				f.write(secret_key)
 		else:
-			self._logger.info("Loading secret key ...")
+			self.logger.info("Loading secret key ...")
 
 		with open(path, "rb") as f:
 			secret_key = f.read()
 		if len(secret_key) < 24:
-			self._logger.warn("Found a secret key too short. Generating a new larger one.")
+			self.logger.warn("Found a secret key too short. Generating a new larger one.")
 			secret_key = os.urandom(24)
 
 		return secret_key
@@ -70,7 +76,7 @@ class WokServer(object):
 		Initialize the Flask application. Override *_create_flask_app()* to use another class.
 		"""
 
-		self._logger.info("Initializing Flask application ...")
+		self.logger.info("Initializing Flask application ...")
 
 		if self.flask is None:
 			self.flask = WokFlask(__name__)
@@ -99,12 +105,21 @@ class WokServer(object):
 		"""
 		Initialize the Wok Engine.
 		"""
-		self._logger.info("Initializing Wok engine ...")
+		self.logger.info("Initializing Wok engine ...")
 
 		self.engine = WokEngine(self.conf)
+		self.engine.case_removed.connect(self._case_removed)
 		self.engine.start(wait=False)
 
-	def init(self):
+	def init(self, conf, app):
+		self.conf = conf
+		self.flask = app
+
+		# FIXME is this really needed ? what about self.engine.work_path ?
+		self._work_path = self.conf.get("wok.work_path", os.path.join(os.getcwd(), "wok-files"))
+		if not os.path.exists(self._work_path):
+			os.makedirs(self._work_path)
+
 		self._init_flask()
 		self._init_engine()
 
@@ -114,14 +129,14 @@ class WokServer(object):
 		self._initialized = True
 
 	def _finalize(self):
-		self._logger.info("Finalizing Wok server ...")
+		self.logger.info("Finalizing Wok server ...")
 		with self.lock:
-			self._logger.info("Finalizing Wok engine ...")
+			self.logger.info("Finalizing Wok engine ...")
 			self.engine.stop()
 
 	def run(self):
 		if not self._initialized:
-			self.init()
+			raise Exception("The server requires initialization before running")
 
 		server_mode = self.conf.get("wok.server.enabled", False, dtype=bool)
 		server_host = self.conf.get("wok.server.host", "0.0.0.0", dtype=str)
@@ -164,10 +179,19 @@ class WokServer(object):
 		Register a new user in the database. Either nick or email attributes is required.
 		"""
 		assert("nick" in kwargs or "email" in kwargs)
+
+		session = db.Session()
+
+		group = session.query(Group).filter(Group.name == USERS_GROUP).first()
+		if group is None:
+			group = Group(name=USERS_GROUP, desc="Users")
+			session.add(group)
+
 		user = User(**kwargs)
 		if user.name is None:
 			user.name = user.nick or user.email
-		session = db.Session()
+		user.groups += [group]
+
 		session.add(user)
 		session.commit()
 		return user
@@ -176,6 +200,14 @@ class WokServer(object):
 		return User.query.filter_by(email=email).first()
 
 	# Cases ------------------------------------------------------------------------------------------------------------
+
+	def _case_removed(self, engine_case):
+		session = db.Session()
+		case = session.query(Case).filter(Case.engine_name == engine_case.name).first()
+		if case is not None:
+			self.case_removed.send(case)
+			session.delete(case)
+			session.commit()
 
 	def exists_case(self, user, case_name):
 		engine_case_name = "{}-{}".format(user.nick, case_name)
@@ -209,12 +241,16 @@ class WokServer(object):
 
 		return case
 
-	def remove_case(self, case):
-		self.engine.remove_case(case.engine_name)
-		# FIXME remove when the remove signal arrives !!!
-		session = db.Session()
-		session.delete(case)
-		session.commit()
+	def remove_case(self, user, case):
+		# The case will be remove from the db when the case remove signal arrives
+		case.removed = True
+		session = inspect(case).session
+		session.commit() # FIXME sure to do the commit here ?
+
+		if self.engine.exists_case(case.engine_name):
+			self.engine.remove_case(case.engine_name)
+		else:
+			self.case_removed.send(case)
 
 	def case_by_id(self, case_id, user=None):
 		q = Case.query.filter(Case.id == case_id)

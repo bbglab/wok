@@ -606,7 +606,7 @@ class DataElement(Data):
 			return self
 
 		if not isinstance(e, (DataElement, dict)):
-			raise Exception("A data element cannot merge an element of type %" % type(e))
+			raise Exception("A data element cannot merge an element of type %s" % type(e))
 
 		if keys is None:
 			keys = e.keys()
@@ -778,7 +778,7 @@ class DataList(Data):
 			return
 
 		if not (isinstance(e, DataList) or isinstance(e, list)):
-			raise Exception("A data element list cannot merge an element of type %" % type(e))
+			raise Exception("A data element list cannot merge an element of type %s" % type(e))
 
 		for d in e:
 			self.data += [d]

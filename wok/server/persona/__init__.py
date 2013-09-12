@@ -14,7 +14,7 @@ class PersonaLogin(object):
 
 	It requires Flask-Login to be initialized before.
 	"""
-	def __init__(self, app, url_prefix="/persona", signout_endpoint="index", signin_endpoint="signin"):
+	def __init__(self, app=None, url_prefix="/persona", signout_endpoint="index", signin_endpoint="signin"):
 		self._url_prefix = url_prefix
 		self.signout_endpoint = signout_endpoint
 		self.signin_endpoint = signin_endpoint

@@ -133,7 +133,7 @@ class McoreJobManager(JobManager):
 					job.finished = datetime.now()
 
 					if process.poll() is None: # and (self._kill_threads or job.state != runstates.RUNNING):
-						self._log.warn("Killing job [{}] {} ...".format(job.id, job.name))
+						self._log.info("Killing job [{}] {} ...".format(job.id, job.name))
 						process.terminate()
 						while process.poll() is None:
 							time.sleep(1)

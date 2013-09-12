@@ -1,6 +1,6 @@
 ###############################################################################
 #
-#    Copyright 2009-2011, Universitat Pompeu Fabra
+#    Copyright 2009-2013, Universitat Pompeu Fabra
 #
 #    This file is part of Wok.
 #
@@ -19,6 +19,7 @@
 #
 ###############################################################################
 
+import sys
 import types
 from datetime import datetime
 import signal
@@ -100,7 +101,7 @@ class Task(object):
 		self._end_time = self._start_time
 
 		# intialize task logging
-		log_conf = self.conf.get("wok.logging")
+		log_conf = self.conf.get("logging")
 		logger.initialize(log_conf)
 		self.logger = logger.get_logger(self.name)
 
@@ -336,6 +337,7 @@ class Task(object):
 	def run(self):
 		"Start the task execution. Remember to call this function at the end of the script !"
 
+		self.logger.debug("Python {0}".format(sys.version))
 		self.logger.debug("Task {0} started on host {1}".format(self.id, self.hostname))
 
 		self._start_time = datetime.now()

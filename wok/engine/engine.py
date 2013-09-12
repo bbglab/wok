@@ -29,6 +29,7 @@ from multiprocessing import cpu_count
 from datetime import datetime
 
 from sqlalchemy.orm.exc import NoResultFound
+from blinker import Signal
 
 from wok import logger
 from wok.config import COMMAND_CONF
@@ -103,6 +104,14 @@ class WokEngine(Synchronizable):
 		self._projects = ProjectManager(self._conf.get("projects"))
 		self._projects.initialize()
 
+		# signals
+
+		self.case_state_changed = Signal()
+		self.case_started = Signal()
+		self.case_finished = Signal()
+		self.case_removed = Signal()
+
+		# recovering
 		if recover:
 			self.__recover_from_db()
 
@@ -183,7 +192,7 @@ class WokEngine(Synchronizable):
 
 	def __remove_case(self, session, case):
 		"""
-		Definitively remove a case. The engine should be locked and no jobs running.
+		Definitively remove a case. The engine should be locked and no case jobs running.
 		"""
 
 		self._log.info("Removing case {} ...".format(case.name))
@@ -207,6 +216,9 @@ class WokEngine(Synchronizable):
 		# remove engine db objects and finalize case
 		self._log.debug("  * database ...")
 		case.remove(session)
+
+		# emit signal
+		self.case_removed.send(case) #FIXME unlock or deferred send ???
 
 	# threads ----------------------
 

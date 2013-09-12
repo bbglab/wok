@@ -33,6 +33,9 @@ class ConfigMerge(object):
 	def merge_into(self, conf):
 		conf.merge(self.element)
 
+	def __repr__(self):
+		return "[{:8s}] {}".format("Merge", repr(self.element))
+
 class ConfigValue(object):
 	def __init__(self, key, value):
 		self.key = key
@@ -45,6 +48,9 @@ class ConfigValue(object):
 			v = self.value
 		conf[self.key] = Data.create(v)
 
+	def __repr__(self):
+		return "[{:8s}] {} = {}".format("Value", self.key, self.value)
+
 class ConfigElement(object):
 	def __init__(self, key, value):
 		self.key = key
@@ -55,6 +61,9 @@ class ConfigElement(object):
 			conf[self.key].merge(self.value)
 		else:
 			conf[self.key] = self.value
+
+	def __repr__(self):
+		return "[{:8s}] {} = {}".format("Element", self.key, repr(self.value))
 
 class ConfigFile(object):
 	def __init__(self, path):
@@ -74,6 +83,8 @@ class ConfigFile(object):
 			logger.get_logger("wok.config").error("".join(msg))
 			raise
 
+	def __repr__(self):
+		return "[{:8s}] {}".format("File", self.path)
 
 class ConfigBuilder(object):
 	def __init__(self, conf_builder=None):
@@ -109,6 +120,12 @@ class ConfigBuilder(object):
 
 	def __call__(self, conf=None):
 		return self.get_conf(conf)
+
+	def __repr__(self):
+		sb = ["ConfigBuilder:"]
+		for part in self.__parts:
+			sb += ["  {}".format(repr(part))]
+		return "\n".join(sb)
 
 class OptionsConfig(DataElement):
 	"""
