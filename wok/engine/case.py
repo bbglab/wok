@@ -35,6 +35,7 @@ from wok.config.data import Data
 from wok.core import runstates
 from wok.core.utils.sync import synchronized
 from wok.core.utils.sync import Synchronizable
+from wok.core.utils.proxies import ReadOnlyProxy
 from wok.data import DataProvider
 from wok.data.portref import PortDataRef, MergedPortDataRef
 from wok.engine.nodes import *
@@ -73,6 +74,9 @@ class Case(object):
 		# components by name
 		self._component_by_cname = None
 
+		# tasks in dependency order
+		self._tasks = []
+
 		# Whether this case is marked for removal when all the jobs finish
 		self.removed = False
 
@@ -109,6 +113,9 @@ class Case(object):
 
 		# connect ports and create dependencies
 		self._connect_ports_and_create_deps()
+
+		# calculate the list of tasks in dependency order
+		self.tasks = self._tasks_in_dependency_order()
 
 		# calculate priorities
 		for node in self.root_node.children:
@@ -548,6 +555,49 @@ class Case(object):
 			for child in component.children:
 				self._apply_dependencies(child, parent_deps, comp_req_sources, component_by_cname, source_providers)
 
+	def _tasks_in_dependency_order(self):
+		tasks = []
+
+		i = 0
+		dep_count = {} # {task, count} how many tasks depend on the task
+		q = deque(self.root_node.children)
+		while len(q) > 0:
+			comp = q.popleft()
+			dep_count[comp] = [i, len(comp.depends)]
+			i += 1
+			if not comp.is_leaf:
+				q.extend(comp.children)
+
+		comps = [[order, comp] for comp, (order, count) in dep_count.items() if count == 0]
+		while len(comps) > 0:
+			t = []
+			for order, comp in comps:
+				del dep_count[comp]
+				for dep in comp.notify:
+					dep_count[dep][1] -= 1
+				if comp.is_leaf:
+					t += [(order, comp)]
+			tasks += [comp for order, comp in sorted(t, key=lambda c: c[0])]
+			comps = [[order, comp] for comp, (order, count) in dep_count.items() if count == 0]
+
+		if len(dep_count) > 0:
+			self._log.warn("Some components got excluded from the list of tasks ordered by its dependencies:\n".format(
+				"\n  ".join([(comp.cname, count) for comp, (order, count) in dep_count.items()])))
+
+		return tasks
+
+	def _tasks_under_block(self, component):
+		tasks = []
+		q = deque(component.children)
+		while len(q) > 0:
+			comp = q.popleft()
+			if comp.is_leaf:
+				tasks += [comp]
+			else:
+				q.extend(comp.children)
+		return tasks
+
+
 	def _calculate_priorities(self, component, parent_priority=0, factor=1.0):
 		if component.model.priority is not None:
 			priority = component.model.priority
@@ -607,7 +657,7 @@ class Case(object):
 		:return: list of updated modules.
 		"""
 
-		if self.state != runstates.RUNNING:
+		if self.state in runstates.TERMINAL_STATES:
 			return []
 
 		updated_components = []
@@ -792,6 +842,10 @@ class Case(object):
 			if component.started is None:
 				component.started = component.finished
 
+			if component == self.root_node:
+				elapsed = component.finished - component.started
+				self._log.info("Case {} {}. Total time: {}".format(self.name, state.title, str(elapsed)))
+
 	def update_states(self, session, component=None):
 		if component is None:
 			component = self.root_node
@@ -842,7 +896,7 @@ class Case(object):
 			self.change_component_state(component, state)
 
 			# update case state from the root node
-			if component.parent is None and component.state in runstates.TERMINAL_STATES:
+			if component.parent is None: #and component.state in runstates.TERMINAL_STATES + [runstates.WAITING]:
 				self.state = component.state
 
 			return True
@@ -1017,19 +1071,20 @@ class Case(object):
 	def task_count_by_state(self):
 		return self.root_node.task_count_by_state
 
-	# FIXME this refers to WorkItemNode and should be loaded from the db
-	def task(self, task_cname, task_index):
-		"""Returns a task by module path and task index.
-		It it doesn't exist raises an exception otherwise returns the task node."""
+	def workitems(self, task_cname):
+		"Returns an iterator of work-items for the task. Task can be a TaskNode or a task cname"
 
-		m = self.module(task_cname)
-		if not isinstance(m, TaskNode):
-			raise Exception("Not a leaf module: %s" % task_cname)
+		session = db.Session()
 
-		if m.tasks is None or task_index >= len(m.tasks):
-			raise Exception("Task index out of bounds: %d" % task_index)
+		task = session.query(db.Task).filter(db.Task.case_id == self.id).filter(db.Task.cname == task_cname).first()
+		if task is None:
+			session.close()
+			return []
 
-		return m.tasks[task_index]
+		q = session.query(db.WorkItem).filter(db.WorkItem.case_id == self.id).filter(db.WorkItem.task_id == task.id)
+
+		session.close()
+		return q
 
 	#TODO
 	"""
@@ -1102,29 +1157,13 @@ class SynchronizedCase(Synchronizable):
 	def task_count_by_state(self):
 		return self.__case.task_count_by_state
 
-	#FIXME
-	@synchronized
-	def module_conf(self, module_id, expanded = True):
-		m = self.__case.module(module_id)
-		#print repr(m), repr(m.conf)
-		if expanded:
-			return m.conf.clone().expand_vars()
-		else:
-			return m.conf
+	@property
+	def tasks(self):
+		return [ReadOnlyProxy(t) for t in self.__case.tasks]
 
-	#FIXME
 	@synchronized
-	def task_exists(self, module_path, task_index):
-		try:
-			self.__case.task(module_path, task_index)
-		except:
-			return False
-		return True
-
-	#FIXME
-	@synchronized
-	def task_logs(self, module_id, task_index):
-		return self.__case.task_logs(module_id, task_index)
+	def workitems(self, task):
+		return self.__case.workitems(task)
 
 	@synchronized
 	def start(self):

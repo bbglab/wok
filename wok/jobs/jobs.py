@@ -217,9 +217,11 @@ class JobManager(object):
 				if job is None:
 					continue
 
-				self._log.debug("Aborting job [{}] {} ...".format(job.id, job.name))
+				job.state = {
+					runstates.WAITING : runstates.ABORTED,
+					runstates.RUNNING : runstates.ABORTING}[job.state]
 
-				job.state = runstates.ABORTING
+				self._log.debug("{} job [{}] {} ...".format(job.state.title.capitalize(), job.id, job.name))
 
 				self._abort(session, job)
 

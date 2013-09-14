@@ -9,6 +9,7 @@ from datetime import datetime
 from sqlalchemy import Column, Boolean, String
 
 from wok.core import exit_codes, runstates
+from wok.core.utils.timeout import ProgressiveTimeout
 
 from wok.jobs.jobs import Job, JobManager
 
@@ -30,7 +31,7 @@ class McoreJobManager(JobManager):
 	def __init__(self, conf):
 		JobManager.__init__(self, "mcore", conf)
 
-		self._num_cores = self._conf.get("max_cores", mp.cpu_count(), dtype=int)
+		self._num_cores = self._conf.get("num_cores", mp.cpu_count(), dtype=int)
 
 		self._running = False
 		self._kill_threads = False
@@ -53,11 +54,13 @@ class McoreJobManager(JobManager):
 			self.hostname = "unknown"
 
 	def _next_job(self, session):
+		timeout = ProgressiveTimeout(0.5, 6.0, 0.5)
 		job = None
 		while job is None and self._running:
 			try:
 				with self._lock:
-					job = session.query(McoreJob).filter_by(state=runstates.WAITING).order_by(McoreJob.priority).first()
+					job = session.query(McoreJob).filter(McoreJob.state == runstates.WAITING)\
+													.order_by(McoreJob.priority).first()
 					if job is not None:
 						job.state = runstates.RUNNING
 						session.commit()
@@ -65,7 +68,7 @@ class McoreJobManager(JobManager):
 				self._log.exception(e)
 				job = None
 			if job is None and self._running:
-				time.sleep(0.5) #TODO Use a Condition --> self._run_cvar or better an Event
+				timeout.sleep() #TODO Use a Condition --> self._run_cvar or better an Event
 
 		return job
 
@@ -126,8 +129,9 @@ class McoreJobManager(JobManager):
 										env=env)
 
 					session.refresh(job, ["state"])
+					timeout = ProgressiveTimeout(0.5, 6.0, 0.5)
 					while job.state == runstates.RUNNING and process.poll() is None and not self._kill_threads:
-						time.sleep(1)
+						timeout.sleep()
 						session.refresh(job, ["state"])
 
 					job.finished = datetime.now()
@@ -135,13 +139,14 @@ class McoreJobManager(JobManager):
 					if process.poll() is None: # and (self._kill_threads or job.state != runstates.RUNNING):
 						self._log.info("Killing job [{}] {} ...".format(job.id, job.name))
 						process.terminate()
+						timeout = ProgressiveTimeout(0.5, 6.0, 0.5)
 						while process.poll() is None:
-							time.sleep(1)
+							timeout.sleep()
 
 						job.state = runstates.ABORTED
 						job.exitcode = process.returncode
 
-					elif job.state is runstates.ABORTING:
+					elif job.state == runstates.ABORTING:
 						job.state = runstates.ABORTED
 
 					else:

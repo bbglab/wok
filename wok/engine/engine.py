@@ -71,6 +71,8 @@ class WokEngine(Synchronizable):
 		if not os.path.exists(self._work_path):
 			os.makedirs(self._work_path)
 
+		self._num_log_threads = wok_conf.get("num_log_threads", cpu_count())
+
 		self._cases = []
 		self._cases_by_name = {}
 
@@ -144,7 +146,7 @@ class WokEngine(Synchronizable):
 	def __recover_from_db(self):
 		raise errors.UnimplementedError()
 
-	def __queue_adaptative_get(self, queue, start_timeout=1, max_timeout=4):
+	def __queue_adaptative_get(self, queue, start_timeout=1.0, max_timeout=6.0):
 		timeout = start_timeout
 		msg = None
 		while self._running and msg is None:
@@ -152,11 +154,11 @@ class WokEngine(Synchronizable):
 				msg = queue.get(timeout=timeout)
 			except Empty:
 				if timeout < max_timeout:
-					timeout += 1
+					timeout += 0.5
 		return msg
 
 	# Not used anywhere
-	def __queue_batch_get(self, queue, start_timeout=1, max_timeout=4):
+	def __queue_batch_get(self, queue, start_timeout=1, max_timeout=5):
 		timeout = start_timeout
 		msg_batch = []
 		while self._running and len(msg_batch) == 0:
@@ -195,7 +197,7 @@ class WokEngine(Synchronizable):
 		Definitively remove a case. The engine should be locked and no case jobs running.
 		"""
 
-		self._log.info("Removing case {} ...".format(case.name))
+		self._log.info("Dropping case {} ...".format(case.name))
 
 		del self._cases_by_name[case.name]
 		self._cases.remove(case)
@@ -230,7 +232,7 @@ class WokEngine(Synchronizable):
 
 		# Start the logs threads
 
-		for i in range(cpu_count()):
+		for i in range(self._num_log_threads):
 			t = threading.Thread(target=self._logs, args=(i, ), name="wok-engine-logs-%d" % i)
 			self._logs_threads += [t]
 			t.start()
@@ -285,15 +287,20 @@ class WokEngine(Synchronizable):
 
 				# check stopping instances
 				for case in self._cases:
-					if case.state == runstates.ABORTING and case not in self._stopping_cases:
+					if (case.state == runstates.ABORTING or case.removed) and case not in self._stopping_cases:
 						num_job_ids = session.query(db.WorkItem.job_id).filter(db.WorkItem.case_id == case.id)\
 											.filter(~db.WorkItem.state.in_(runstates.TERMINAL_STATES)).count()
 						if num_job_ids == 0:
-							dbcase = session.query(db.Case).filter(db.Case.id == case.id)
-							dbcase.state = case.state = runstates.ABORTED
-							session.commit()
+							if case.state == runstates.ABORTING:
+								_log.debug("Aborted case {} with no running jobs".format(case.name))
+								dbcase = session.query(db.Case).filter(db.Case.id == case.id)
+								dbcase.state = case.state = runstates.ABORTED
+								session.commit()
+							else:
+								_log.debug("Stopped case {} with no running jobs".format(case.name))
 
 							if case.removed:
+								_log.debug("Removing case {} with no running jobs".format(case.name))
 								self.__remove_case(session, case)
 								session.commit()
 						else:
@@ -504,8 +511,9 @@ class WokEngine(Synchronizable):
 					workitem.state_msg = ""
 					session.commit()
 
+					# check if there are still more work-items
 					num_workitems = session.query(db.WorkItem).filter(
-						~db.WorkItem.state.in_(runstates.TERMINAL_STATES)).count() # FIXME this should check cases state
+						~db.WorkItem.state.in_(runstates.TERMINAL_STATES)).count()
 
 					if self._single_run and num_workitems == 0:
 						stop_engine = True
@@ -515,7 +523,7 @@ class WokEngine(Synchronizable):
 						if stop_engine:
 							self._finished_event.set()
 
-					_log.debug("[{}] Joined work-item {}: {}".format(case.name, workitem.cname, wr.to_native()))
+					_log.debug("[{}] Joined work-item {}".format(case.name, workitem.cname))
 
 					# check stopping instances
 					case = self._cases_by_name[workitem.case.name]
@@ -523,14 +531,19 @@ class WokEngine(Synchronizable):
 						job_ids = self._stopping_cases[case]
 						if job_id in job_ids:
 							job_ids.remove(job_id)
+
 						if len(job_ids) == 0:
 							del self._stopping_cases[case]
-							workitem.case.state = case.state = runstates.ABORTED
+							if case.state == runstates.ABORTING:
+								workitem.case.state = case.state = runstates.ABORTED
+
 							session.commit()
 
 							if case.removed:
 								self.__remove_case(session, case)
 								session.commit()
+						else:
+							_log.debug("Still waiting for {} jobs to stop".format(len(job_ids)))
 
 			except:
 				num_exc += 1
@@ -700,9 +713,15 @@ class WokEngine(Synchronizable):
 	@synchronized
 	def remove_case(self, name):
 		if name in self._cases_by_name:
+			session = db.Session()
 			case = self._cases_by_name[name]
-			case.removed = True
-			case.state = runstates.ABORTING
+			dbcase = session.query(db.Case).filter(db.Case.id == case.id).first()
+			dbcase.removed = case.removed = True
+			if case.state not in runstates.TERMINAL_STATES + [runstates.READY]:
+				dbcase.state = case.state = runstates.ABORTING
+			session.commit()
+			session.close()
+			self.notify(lock=False)
 			self._log.debug("Case {} marked for removal".format(case.name))
 		else:
 			self._log.error("Trying to remove a non existing case: {}".format(name))

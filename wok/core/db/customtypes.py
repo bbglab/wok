@@ -34,7 +34,7 @@ class Config(types.TypeDecorator):
 
 class RunState(types.TypeDecorator):
 
-	impl = types.Integer
+	impl = types.String
 
 	def process_bind_param(self, value, dialect):
 		return value.symbol if value is not None else None

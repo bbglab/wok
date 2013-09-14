@@ -51,6 +51,7 @@ class Case(Base):
 	flow_uri = Column(String)
 	conf = Column(Config)
 	state = Column(RunState)
+	removed = Column(Boolean, default=False)
 
 	project = Column(String)
 	platform = Column(String)

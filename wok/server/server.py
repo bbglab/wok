@@ -83,7 +83,7 @@ class WokServer(object):
 
 		self.flask.wok = self
 
-		self.flask.logger_name = "wok.server"
+		self.flask.logger_name = "web"
 
 		if self.flask.secret_key is None:
 			self.flask.secret_key = self._generate_secret_key()
@@ -250,7 +250,10 @@ class WokServer(object):
 		if self.engine.exists_case(case.engine_name):
 			self.engine.remove_case(case.engine_name)
 		else:
+			self.logger.debug("No engine case available: {}".format(case.engine_name))
 			self.case_removed.send(case)
+			session.delete(case)
+			session.commit()
 
 	def case_by_id(self, case_id, user=None):
 		q = Case.query.filter(Case.id == case_id)

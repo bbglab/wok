@@ -3,6 +3,7 @@ import os
 import json
 
 from wok.data.port import Port
+from wok.core.utils.io import FileLockEx
 
 class SourceData(object):
 	def __init__(self, path):
@@ -23,10 +24,16 @@ class SourceData(object):
 
 	def _connection(self):
 		if self._db is None:
-			create = not os.path.exists(self._path)
+			#create = not os.path.exists(self._path)
 			self._db = sqlite3.connect(self._path, timeout=1800)
-			if create:
-				self._create()
+			#if create:
+			with FileLockEx("{}.lock".format(self._path), "r+") as f:
+				if f.read() != "1":
+					self._create()
+					f.seek(0)
+					f.write("1")
+					f.truncate()
+
 		return self._db
 
 	def count(self):
