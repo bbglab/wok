@@ -1,0 +1,155 @@
+#!/usr/bin/env python
+
+###############################################################################
+#
+#    Copyright 2009-2011, Universitat Pompeu Fabra
+#
+#    This file is part of Wok.
+#
+#    Wok is free software: you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation, either version 3 of the License, or
+#    (at your option) any later version.
+#
+#    Wok is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program.  If not, see <http://www.gnu.org/licenses
+#
+###############################################################################
+
+import os
+from datetime import datetime
+
+from wok import logger
+from wok.config.cli import OptionsConfig
+from wok.config.data import Data
+from wok.engine import WokEngine
+
+def add_options(parser):
+	parser.add_option("-n", "--case-name", dest="case_names",
+				action="append", metavar="NAME",
+				help="Set the instance name. Default name is built from the current date.")
+
+def main():
+	# Wok initialization
+
+	default_case_name = datetime.now().strftime("i%Y-%m-%d-%H-%M-%S")
+	install_path = os.path.dirname(os.path.realpath(__file__))
+
+	# Get configuration
+
+	initial_conf = {
+		"wok" : {
+			"command" : {
+				"native" : {
+					"python" : {
+						"lib_path" : [install_path]
+					}
+				}
+			}
+		},
+
+		"__cwd" : os.getcwd()
+	}
+
+	conf = OptionsConfig(
+		initial_conf=initial_conf,
+		args_usage="[<project:flow/version>]",
+		add_options=add_options)
+
+	if "wok" not in conf:
+		print("Missing wok configuration")
+		exit(-1)
+
+	# wok configuration
+
+	wok_conf = conf["wok"].expand_vars(context=conf)
+
+	# initialize logging
+
+	logger.initialize(wok_conf.get("logging"))
+
+	log = logger.get_logger("wok.run")
+
+	log.debug("Wok configuration: %s" % repr(wok_conf))
+
+	# check arguments
+
+	flow_uris = None
+	if len(conf.args) > 0:
+		flow_uris = conf.args
+	#elif len(conf.args) > 1:
+	#	log.error("More than one workflow definition file specified")
+	#	exit(-1)
+
+	server_mode = wok_conf.get("server.enabled", False, dtype=bool)
+	server_host = wok_conf.get("server.host", "localhost", dtype=str)
+	server_port = wok_conf.get("server.port", 5000, dtype=int)
+	server_debug = wok_conf.get("server.debug", False, dtype=bool)
+	start_instances = wok_conf.get("server.start_instances", False, dtype=bool)
+
+	# create engine
+	wok = WokEngine(conf)
+
+	retcode = 0
+
+	try:
+		# start wok on the background
+		wok.start(wait=False, single_run=not server_mode)
+
+		# create instances
+		if flow_uris is not None:
+			case_names = conf.options.case_names or []
+			for i, flow_uri in enumerate(flow_uris):
+				if i < len(case_names):
+					case_name = case_names[i]
+				else:
+					if len(flow_uris) == 1:
+						case_name = default_case_name
+					else:
+						case_name = "%s-%02d" % (default_case_name, i)
+
+				case = wok.create_case(case_name, conf.builder, flow_uri)
+				if not server_mode or start_instances:
+					case.start()
+
+		# run server
+		if server_mode:
+			from wok._server.init import app
+
+			log.info("Running server at http://{0}:{1}".format(server_host, server_port))
+
+			log_conf = wok_conf.get("server.log")
+			if log_conf is None:
+				log_conf = Data.element()
+				log_conf["level"] = "warn"
+			app_log = logger.get_logger("werkzeug", conf=log_conf)
+			app_log.info("Log configured")
+
+			app.config["WOK"] = wok
+			app.run(
+					host = server_host,
+					port = server_port,
+					debug = server_debug,
+					use_reloader = False)
+
+			# user has pressed ctrl-C and flask app stops
+			# then we have to stop the engine too
+			wok.stop()
+		else:
+			# wait for wok engine to finish
+			wok.wait()
+	except Exception as e:
+		log.exception(e)
+		retcode = -1
+	finally:
+		wok.stop()
+
+	exit(retcode)
+
+if __name__ == "__main__":
+	main()

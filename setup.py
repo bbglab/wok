@@ -18,29 +18,24 @@ distribute_setup.use_setuptools()
 
 from setuptools import setup, find_packages
 
-import os.path
-import sys
-sys.path.insert(0, os.path.join(os.path.dirname(sys.argv[0]), 'src'))
-
 from wok import VERSION, AUTHORS, AUTHORS_EMAIL
 
 setup(
     name = 'wok',
     version = VERSION,
-    packages = find_packages('src'),
-	package_dir = { '': 'src' },
+    packages = find_packages(),
     scripts = [
-		'src/wok-run'
+		'scripts/wok-run'
 	],
 
     # Project uses reStructuredText, so ensure that the docutils get
     # installed or upgraded on the target machine
     install_requires = [
 		'docutils>=0.3',
-#		'lxml>=2.3',
-		'drmaa',
-		'Flask==0.6',
-		'pygments'
+		'SQLAlchemy==0.8.2',
+		'pygments',
+		'Flask==0.10.1',
+		'Flask-Login==0.2.7'
 	],
 
     package_data = {
@@ -72,6 +67,4 @@ setup(
         'Topic :: Scientific/Engineering',
 		'Topic :: Scientific/Engineering :: Bio-Informatics'
     ]
-
-    # could also include download_url, etc.
 )
