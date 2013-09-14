@@ -2,7 +2,7 @@
 
 ###############################################################################
 #
-#    Copyright 2009-2011, Universitat Pompeu Fabra
+#    Copyright 2009-2013, Universitat Pompeu Fabra
 #
 #    This file is part of Wok.
 #
@@ -21,13 +21,13 @@
 #
 ###############################################################################
 
-__version__ = "3.0-dev"
+__version__ = "3.0.0-rc1"
 
 VERSION = __version__
 
 AUTHORS = u"Christian Pérez-Llamas"
 AUTHORS_EMAIL = u"christian.perez@upf.edu"
 
-COPYRIGHT = u"2011, Universitat Pompeu Fabra"
+COPYRIGHT = u"2009-2013, Universitat Pompeu Fabra"
 
 import config.data as element
