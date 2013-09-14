@@ -32,7 +32,6 @@ setup(
     # installed or upgraded on the target machine
     install_requires = [
 		'docutils>=0.3',
-		'distribute>=0.6.3',
 		'SQLAlchemy==0.8.2',
 		'pygments',
 		'Flask==0.10.1',
