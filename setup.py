@@ -35,12 +35,13 @@ setup(
 		'SQLAlchemy==0.8.2',
 		'pygments',
 		'Flask==0.10.1',
-		'Flask-Login==0.2.7'
+		'Flask-Login==0.2.7',
+		'blinker'
 	],
 
     package_data = {
         # If any package contains *.txt or *.pdf files, include them:
-        '' : ['*.txt', '*.pdf', '*.html']
+        '' : ['*.css', '*.ico', '*.eot', '*.svg', '*.ttf', '*.woff', '*.js', '*.html']
     },
 
     # metadata for upload to PyPI

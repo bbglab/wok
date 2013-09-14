@@ -19,7 +19,7 @@ try:
 	from mongo import MongoProvider
 	_DATA_PROVIDERS["mongo"] = MongoProvider
 except ImportError:
-	__log("The MondoDB data provider can not be loaded.")
+	__log("The MongoDB data provider can not be loaded.")
 	__log("This data provider is necessary only if you are going to use a MongoDB database.")
 	__log("To install it run the following command: pip install pymongo-2.5.2")
 
