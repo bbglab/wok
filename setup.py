@@ -20,6 +20,9 @@ from setuptools import setup, find_packages
 
 from wok import VERSION, AUTHORS, AUTHORS_EMAIL
 
+with open("README.rst", "r") as f:
+	DOC = f.read()
+
 setup(
     name = 'wok',
     version = VERSION,
@@ -33,16 +36,13 @@ setup(
     install_requires = [
 		'docutils>=0.3',
 		'SQLAlchemy==0.8.2',
-		'pygments',
+		#'pygments',
 		'Flask==0.10.1',
 		'Flask-Login==0.2.7',
-		'blinker'
+		'blinker==1.3'
 	],
 
-    package_data = {
-        # If any package contains *.txt or *.pdf files, include them:
-        '' : ['*.css', '*.ico', '*.eot', '*.svg', '*.ttf', '*.woff', '*.js', '*.html']
-    },
+    include_package_data = True,
 
     # metadata for upload to PyPI
     author = AUTHORS,
@@ -50,8 +50,8 @@ setup(
     description = 'Workflow management system',
     license = 'GPL 3.0',
     keywords = 'workflow dataflow analysis parallel',
-    url = 'https://github.com/chris-zen/wok',
-	long_description = __doc__,
+    url = 'https://bitbucket.org/bbglab/wok',
+	long_description = DOC,
 
 	classifiers = [
         'Development Status :: 3 - Alpha',
@@ -63,7 +63,6 @@ setup(
 		'Natural Language :: English',
         'Operating System :: OS Independent',
         'Programming Language :: Python',
-        'Programming Language :: Python :: 2.6',
         'Programming Language :: Python :: 2.7',
         'Topic :: Scientific/Engineering',
 		'Topic :: Scientific/Engineering :: Bio-Informatics'
