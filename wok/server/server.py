@@ -48,7 +48,7 @@ class WokServer(object):
 
 		self._initialized = False
 
-		self.logger = logger.get_logger("wok.server")
+		self.logger = logger.get_logger("wok.server", level="info")
 
 		if app is not None:
 			self.init_app(app)
@@ -114,6 +114,13 @@ class WokServer(object):
 		self.conf_builder = cb
 		self.conf = cb.get_conf()
 
+		# initialize logging according to the configuration
+
+		log = logger.get_logger("")
+		log.removeHandler(log.handlers[0])
+		logging_conf = self.conf.get("wok.logging")
+		logger.initialize(logging_conf)
+
 		self.logger.debug(repr(self.conf))
 
 	def _init_engine(self):
@@ -148,11 +155,6 @@ class WokServer(object):
 		self._init_flask(app)
 
 		self._init_conf(app)
-
-		log = logger.get_logger("")
-		log.removeHandler(log.handlers[0])
-		logging_conf = self.conf.get("wok.logging")
-		logger.initialize(logging_conf)
 
 		self._init_engine()
 
