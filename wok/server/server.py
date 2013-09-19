@@ -99,15 +99,22 @@ class WokServer(object):
 	def _init_conf(self, app):
 		cb = ConfigBuilder()
 
+		self.logger.info("Checking configuration files from WOK_CONF ...")
+
 		wok_conf = app.config["WOK_CONF"]
 		for path in wok_conf:
 			if not os.path.exists(path):
-				self.logger.error("Wok configuration file not found: {}".format(path))
+				self.logger.error("--- {} (not found)".format(path))
 				continue
+			self.logger.info("+++ {}".format(path))
 			cb.add_file(path)
+
+		self.logger.info("Loading configuration ...")
 
 		self.conf_builder = cb
 		self.conf = cb.get_conf()
+
+		self.logger.debug(repr(self.conf))
 
 	def _init_engine(self):
 		"""
