@@ -30,7 +30,7 @@ from collections import deque
 from sqlalchemy import func, distinct
 
 from wok import logger
-from wok.config import ConfigBuilder
+from wok.config.builder import ConfigBuilder
 from wok.config.data import Data
 from wok.core import runstates
 from wok.core.utils.sync import synchronized

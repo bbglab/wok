@@ -33,8 +33,8 @@ from blinker import Signal
 
 from wok import logger
 from wok.config import COMMAND_CONF
-from wok.config.data import Data, DataList
-from wok.config.cli import ConfigBuilder
+from wok.config.data import Data
+from wok.config.builder import ConfigBuilder
 from wok.core import runstates
 from wok.core import events
 from wok.core import errors
@@ -155,6 +155,8 @@ class WokEngine(Synchronizable):
 			except Empty:
 				if timeout < max_timeout:
 					timeout += 0.5
+			except:
+				break
 		return msg
 
 	# Not used anywhere
@@ -622,6 +624,7 @@ class WokEngine(Synchronizable):
 					self._log.error("Exception while waiting for threads to finish ...")
 					self._log.exception(e)
 					self._log.warn("killing the process ...")
+					exit(-1)
 					import signal
 					os.kill(os.getpid(), signal.SIGTERM)
 

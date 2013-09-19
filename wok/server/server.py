@@ -14,8 +14,9 @@ from flask.ext.login import LoginManager
 #							login_user, logout_user, UserMixin, AnonymousUser,
 #							confirm_login, fresh_login_required)
 
-from wok import logger
+from wok import logger, VERSION
 from wok.config.data import Data
+from wok.config.builder import ConfigBuilder
 from wok.engine import WokEngine
 
 import db
@@ -38,22 +39,22 @@ class WokServer(object):
 
 	case_removed = Signal()
 
+	def __init__(self, app=None, start_engine=True):
+		self.app = app
+		self._start_engine = start_engine
 
-	def __init__(self):
-		self.flask = None
 		self.engine = None
 		self.lock = Lock()
 
 		self._initialized = False
 
-		self._work_path = None
-
-		self._endpoints = {} # TODO remove
-
 		self.logger = logger.get_logger("wok.server")
 
+		if app is not None:
+			self.init_app(app)
+
 	def _generate_secret_key(self):
-		path = os.path.join(self._work_path, "secret_key.bin")
+		path = os.path.join(self.engine.work_path, "secret_key.bin")
 
 		if not os.path.exists(path):
 			self.logger.info("Generating a new secret key ...")
@@ -71,35 +72,42 @@ class WokServer(object):
 
 		return secret_key
 
-	def _init_flask(self):
+	def _teardown_request(self, exception):
+		db.Session.remove()
+
+	def _init_flask(self, app):
 		"""
 		Initialize the Flask application. Override *_create_flask_app()* to use another class.
 		"""
 
 		self.logger.info("Initializing Flask application ...")
 
-		if self.flask is None:
-			self.flask = WokFlask(__name__)
+		app.wok = self
 
-		self.flask.wok = self
+		app.logger_name = "web"
 
-		self.flask.logger_name = "web"
+		app.teardown_request(self._teardown_request)
 
-		if self.flask.secret_key is None:
-			self.flask.secret_key = self._generate_secret_key()
-
-		self.flask.teardown_request(self._teardown_request)
-
-		self.login_manager = LoginManager()
-		self.login_manager.init_app(self.flask)
-		self.login_manager.user_loader(self._load_user)
-		self.login_manager.login_message = "Please sign in to access this page."
+		login_manager = LoginManager()
+		login_manager.init_app(self.app)
+		login_manager.user_loader(self._load_user)
+		login_manager.login_message = "Please sign in to access this page."
 		#self.login_manager.anonymous_user = ...
 
-		self.flask.register_blueprint(core.bp, url_prefix="/core")
+		app.register_blueprint(core.bp, url_prefix="/core")
 
-	def _teardown_request(self, exception):
-		db.Session.remove()
+	def _init_conf(self, app):
+		cb = ConfigBuilder()
+
+		wok_conf = app.config["WOK_CONF"]
+		for path in wok_conf:
+			if not os.path.exists(path):
+				self.logger.error("Wok configuration file not found: {}".format(path))
+				continue
+			cb.add_file(path)
+
+		self.conf_builder = cb
+		self.conf = cb.get_conf()
 
 	def _init_engine(self):
 		"""
@@ -109,11 +117,11 @@ class WokServer(object):
 
 		self.engine = WokEngine(self.conf)
 		self.engine.case_removed.connect(self._case_removed)
-		self.engine.start(wait=False)
 
+	'''
 	def init(self, conf, app):
 		self.conf = conf
-		self.flask = app
+		self.app = app
 
 		# FIXME is this really needed ? what about self.engine.work_path ?
 		self._work_path = self.conf.get("wok.work_path", os.path.join(os.getcwd(), "wok-files"))
@@ -127,6 +135,35 @@ class WokServer(object):
 		db.create_engine(uri="sqlite:///{}".format(db_path))
 
 		self._initialized = True
+	'''
+
+	def init_app(self, app):
+		self._init_flask(app)
+
+		self._init_conf(app)
+
+		log = logger.get_logger("")
+		log.removeHandler(log.handlers[0])
+		logging_conf = self.conf.get("wok.logging")
+		logger.initialize(logging_conf)
+
+		self._init_engine()
+
+		if app.secret_key is None:
+			app.secret_key = self._generate_secret_key()
+
+		app.extensions["wok"] = self.engine
+		
+		db_path = os.path.join(self.engine.work_path, "server.db")
+		db.create_engine(uri="sqlite:///{}".format(db_path))
+
+		self._initialized = True
+
+		if self._start_engine:
+			self.start_engine()
+
+	def start_engine(self):
+		self.engine.start(wait=False)
 
 	def _finalize(self):
 		self.logger.info("Finalizing Wok server ...")
@@ -134,21 +171,34 @@ class WokServer(object):
 			self.logger.info("Finalizing Wok engine ...")
 			self.engine.stop()
 
-	def run(self):
+	def run(self, app=None, version=VERSION):
+
 		if not self._initialized:
 			raise Exception("The server requires initialization before running")
 
-		server_mode = self.conf.get("wok.server.enabled", False, dtype=bool)
-		server_host = self.conf.get("wok.server.host", "0.0.0.0", dtype=str)
-		server_port = self.conf.get("wok.server.port", 5000, dtype=int)
-		server_debug = self.conf.get("wok.server.debug", False, dtype=bool)
+		from argparse import ArgumentParser
+		parser = ArgumentParser()
+		parser.add_argument('--version', action='version', version='%(prog)s ' + VERSION)
+		parser.add_argument("--host", dest="host", metavar="HOST", default="0.0.0.0", help="Define the host to listen for")
+		parser.add_argument("--port", dest="port", metavar="PORT", type=int, default=5000, help="Define the port to listen for")
+		parser.add_argument("--pid-file", dest="pid_file", metavar="PATH", help="Save the PID into a file at PATH")
+		parser.add_argument("--debug", dest="debug", action="store_true", default=False, help="Run in debug mode")
+		args = parser.parse_args()
+
+		if args.pid_file is not None:
+			with open(args.pid_file, "w") as f:
+				f.write(str(os.getpid()))
+
+		if app is None:
+			app = self.app
+		if app is None:
+			raise Exception("The server can not be run without the app")
 
 		try:
-			self.flask.run(
-					host=server_host,
-					port=server_port,
-					debug=server_debug,
-					use_reloader=False)
+			app.run(
+				host=args.host,
+				port=args.port,
+				debug=args.debug)
 
 			# user has pressed ctrl-C and flask stops
 

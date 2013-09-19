@@ -202,7 +202,10 @@ class McoreJobManager(JobManager):
 		if job.output is None:
 			return None
 
-		return open(job.output)
+		try:
+			return open(job.output)
+		except:
+			return None
 
 	def _join(self, session, job):
 		while self._running and job.state not in runstates.TERMINAL_STATES:
