@@ -24,9 +24,7 @@ class SourceData(object):
 
 	def _connection(self):
 		if self._db is None:
-			#create = not os.path.exists(self._path)
 			self._db = sqlite3.connect(self._path, timeout=1800)
-			#if create:
 			with FileLockEx("{}.lock".format(self._path), "r+") as f:
 				if f.read() != "1":
 					self._create()
@@ -155,7 +153,7 @@ class FilesInPort(Port):
 					raise
 
 				src = self._sources[self._src_index]
-				src_size = src.size()
+				src_size = src.count()
 				self._src_skip = 0
 				self._src_limit = min(src_size, self._size)
 
