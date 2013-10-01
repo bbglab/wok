@@ -41,7 +41,7 @@ from wok.core import events
 from wok.core import errors
 from wok.core.utils.sync import Synchronizable, synchronized
 from wok.core.utils.logsdb import LogsDb
-from wok.core.utils.proctitle import set_thread_title
+from wok.core.utils.proctitle import set_proc_title, set_thread_title
 from wok.core.flow.loader import FlowLoader
 from wok.core.projects import ProjectManager
 from wok.platform.factory import create_platform
@@ -737,7 +737,7 @@ class WokEngine(Synchronizable):
 			case.persist(session)
 
 			session.flush()
-			self._cvar.notify()
+			self.notify(lock=False)
 		except:
 			session.rollback()
 			self._log.error("Error while creating case {} for the workflow {} with configuration {}".format(
