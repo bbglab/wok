@@ -30,7 +30,7 @@ _DEFAULT_FORMAT = "%(asctime)s %(name)-20s [%(levelname)-5s] %(message)s"
 _DEFAULT_DATEFMT = "%Y-%m-%d %H:%M:%S"
 #_DEFAULT_DATEFMT = "%Y-%m-%d %H:%M:%S"
 
-_log_level_map = {
+_LOG_LEVEL = {
 	"debug" : logging.DEBUG,
 	"info" : logging.INFO,
 	"warn" : logging.WARN,
@@ -84,7 +84,7 @@ def initialize(conf=None, format=None, datefmt=None, level=None):
 	_initialized = True
 
 def get_level(level):
-	return _log_level_map.get(level.lower(), "notset")
+	return _LOG_LEVEL.get(level.lower(), "notset")
 
 def get_logger(name="", level=None, conf=None):
 	"""
@@ -158,11 +158,11 @@ def get_handler(logger, conf):
 		return
 
 	type = conf.get("type")
-	if type is None or not isinstance(type, basestring) or type.lower() != "smtp":
+	if type is None or not isinstance(type, basestring) or type.lower() not in _HANDLERS.keys():
 		logger.error("Unknown or unsupported handler type: {0}\n{1}".format(type, repr(conf)))
 		return
 
-	handler = get_smtp_handler(conf)
+	handler = _HANDLERS[type](conf)
 
 	return handler
 
@@ -200,3 +200,7 @@ def get_smtp_handler(conf):
 		handler.setFormatter(logging.Formatter(format))
 
 	return handler
+
+_HANDLERS = {
+	"smtp" : get_smtp_handler
+}

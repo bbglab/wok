@@ -698,9 +698,10 @@ class WokEngine(Synchronizable):
 			self._cases += [case]
 			self._cases_by_name[case_name] = case
 
-			self._cvar.notify()
-
 			case.persist(session)
+			
+			session.flush()
+			self._cvar.notify()
 		except:
 			session.rollback()
 			self._log.error("Error while creating case {} for the workflow {} with configuration {}".format(
