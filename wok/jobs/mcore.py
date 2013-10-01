@@ -10,6 +10,7 @@ from sqlalchemy import Column, Boolean, String
 
 from wok.core import exit_codes, runstates
 from wok.core.utils.timeout import ProgressiveTimeout
+from wok.core.utils.proctitle import set_thread_title
 
 from wok.jobs.jobs import Job, JobManager
 
@@ -84,9 +85,13 @@ class McoreJobManager(JobManager):
 		session = self._create_session()
 		try:
 			while self._running:
+				set_thread_title()
+
 				job = self._next_job(session)
 				if job is None:
 					break
+
+				set_thread_title("{}".format(job.name))
 
 				self._log.debug("Running task [{}] {} ...".format(job.id, job.name))
 
@@ -127,6 +132,8 @@ class McoreJobManager(JobManager):
 										stderr=subprocess.STDOUT,
 										cwd=cwd,
 										env=env)
+
+					set_thread_title("{} PID={}".format(job.name, process.pid))
 
 					session.refresh(job, ["state"])
 					timeout = ProgressiveTimeout(0.5, 6.0, 0.5)

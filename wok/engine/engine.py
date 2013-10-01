@@ -40,6 +40,7 @@ from wok.core import events
 from wok.core import errors
 from wok.core.utils.sync import Synchronizable, synchronized
 from wok.core.utils.logsdb import LogsDb
+from wok.core.utils.proctitle import set_thread_title
 from wok.core.flow.loader import FlowLoader
 from wok.core.projects import ProjectManager
 from wok.platform.factory import create_platform
@@ -228,7 +229,8 @@ class WokEngine(Synchronizable):
 
 	@synchronized
 	def _run(self):
-		self._running = True
+
+		set_thread_title()
 
 		num_exc = 0
 
@@ -248,9 +250,11 @@ class WokEngine(Synchronizable):
 
 		_log.debug("Engine run thread ready")
 
+		self._running = True
 		while self._running:
 			try:
 				#_log.debug("Scheduling new tasks ...")
+				set_thread_title("scheduling")
 
 				session = db.Session()
 
@@ -276,6 +280,8 @@ class WokEngine(Synchronizable):
 
 				#_log.debug("Waiting for events ...")
 
+				set_thread_title("waiting")
+
 				while len(updated_components) == 0 and not self._notified and self._running:
 					self._cvar.wait(1)
 				self._notified = False
@@ -285,7 +291,9 @@ class WokEngine(Synchronizable):
 
 				session = db.Session()
 
-				#_log.debug("Stoping jobs for aborting instances ...")
+				#_log.debug("Stopping jobs for aborting instances ...")
+
+				set_thread_title("working")
 
 				# check stopping instances
 				for case in self._cases:
@@ -385,6 +393,8 @@ class WokEngine(Synchronizable):
 				if num_exc > 3:
 					raise
 
+		set_thread_title("finishing")
+
 		try:
 			# print cases state before leaving the thread
 			#for case in self._cases:
@@ -404,6 +414,8 @@ class WokEngine(Synchronizable):
 	def _logs(self, index):
 		"Log retrieval thread"
 
+		set_thread_title()
+
 		_log = logger.get_logger("wok.engine.logs-{}".format(index))
 		
 		_log.debug("Engine logs thread ready")
@@ -411,6 +423,8 @@ class WokEngine(Synchronizable):
 		num_exc = 0
 
 		while self._running:
+			set_thread_title("waiting")
+
 			# get the next task to retrieve the logs
 			job_info = self.__queue_adaptative_get(self._logs_queue)
 			if job_info is None:
@@ -426,6 +440,8 @@ class WokEngine(Synchronizable):
 
 				case = self._cases_by_name[workitem.case.name]
 				task = case.component(workitem.task.cname)
+
+				set_thread_title(workitem.cname)
 
 				_log.debug("[{}] Reading logs for work-item {} ...".format(case.name, workitem.cname))
 
@@ -468,6 +484,8 @@ class WokEngine(Synchronizable):
 	def _join(self):
 		"Joiner thread"
 
+		set_thread_title()
+
 		_log = logger.get_logger("wok.engine.join")
 
 		_log.debug("Engine join thread ready")
@@ -476,6 +494,8 @@ class WokEngine(Synchronizable):
 
 		while self._running:
 			try:
+				set_thread_title("waiting")
+
 				job_info = self.__queue_adaptative_get(self._join_queue)
 				if job_info is None:
 					continue
@@ -488,6 +508,8 @@ class WokEngine(Synchronizable):
 
 				case = self._cases_by_name[workitem.case.name]
 				task = case.component(workitem.task.cname)
+
+				set_thread_title(task.cname)
 
 				#_log.debug("Joining work-item %s ..." % task.cname)
 
@@ -582,12 +604,25 @@ class WokEngine(Synchronizable):
 		self._run_thread = threading.Thread(target=self._run, name="wok-engine-run")
 		self._run_thread.start()
 
-		self._log.info("Engine started")
+		self._lock.release()
+
+		try:
+			while not self._running:
+				time.sleep(1)
+
+			self._log.info("Engine started")
+		except KeyboardInterrupt:
+			wait = False
+			self._log.warn("Ctrl-C pressed ...")
+		except Exception as e:
+			wait = False
+			self._log.error("Exception while waiting for the engine to start")
+			self._log.exception(e)
 
 		if wait:
-			self._lock.release()
 			self.wait()
-			self._lock.acquire()
+
+		self._lock.acquire()
 
 	def wait(self):
 		self._log.info("Waiting for the engine to finish ...")
@@ -699,7 +734,7 @@ class WokEngine(Synchronizable):
 			self._cases_by_name[case_name] = case
 
 			case.persist(session)
-			
+
 			session.flush()
 			self._cvar.notify()
 		except:
