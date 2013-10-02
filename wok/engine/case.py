@@ -862,6 +862,9 @@ class Case(object):
 		if self.update_component_state(component, children_states):
 			session.query(db.Component).filter(db.Component.id == component.id)\
 					.update({db.Component.state : component.state})
+			if component == self.root_node:
+				self.state = component.state # update case state from the root node
+				session.query(db.Case).filter(db.Case.id == self.id).update({db.Case.state : self.state})
 			session.commit()
 
 	def update_component_state(self, component, children_states):
@@ -894,11 +897,6 @@ class Case(object):
 
 		if state is not None and state != prev_state:
 			self.change_component_state(component, state)
-
-			# update case state from the root node
-			if component.parent is None: #and component.state in runstates.TERMINAL_STATES + [runstates.WAITING]:
-				self.state = component.state
-
 			return True
 
 		return False

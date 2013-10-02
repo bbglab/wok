@@ -235,6 +235,8 @@ class WokEngine(Synchronizable):
 
 		num_exc = 0
 
+		self._running = True
+
 		# Start the logs threads
 
 		for i in range(self._num_log_threads):
@@ -251,7 +253,6 @@ class WokEngine(Synchronizable):
 
 		_log.debug("Engine run thread ready")
 
-		self._running = True
 		while self._running:
 			try:
 				#_log.debug("Scheduling new tasks ...")
@@ -608,6 +609,7 @@ class WokEngine(Synchronizable):
 		self._lock.release()
 
 		try:
+			# FIXME self._running is not enough to detect that all threads are running
 			while not self._running:
 				time.sleep(1)
 
