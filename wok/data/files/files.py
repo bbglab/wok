@@ -17,6 +17,10 @@ class FilesProvider(DataProvider):
 	    **log**: logging configuration
 	"""
 
+	DUMP_OPTIONS = dict(
+		indent=True
+	)
+
 	def __init__(self, conf):
 		DataProvider.__init__(self, "sqlite", conf)
 
@@ -79,7 +83,7 @@ class FilesProvider(DataProvider):
 	def save_task(self, task):
 		task_path = self.__task_path(task.case.name, task.cname)
 		with open(os.path.join(task_path, "task.json"), "w") as f:
-			json.dump(self._task_element(task), f)
+			json.dump(self._task_element(task), f, self.DUMP_OPTIONS)
 
 	def load_task(self, case_name, task_cname):
 		task_path = self.__task_path(case_name, task_cname)
@@ -91,7 +95,7 @@ class FilesProvider(DataProvider):
 		workitems_path = self.__workitems_path(task.case.name, task.cname)
 		file_name = "{:08}.json".format(workitem.index)
 		with open(os.path.join(workitems_path, file_name), "w") as f:
-			json.dump(self._workitem_element(workitem), f)
+			json.dump(self._workitem_element(workitem), f, self.DUMP_OPTIONS)
 
 	def load_workitem(self, case_name, task_cname, index):
 		workitems_path = self.__workitems_path(case_name, task_cname)
@@ -103,7 +107,7 @@ class FilesProvider(DataProvider):
 		workitems_path = self.__workitems_path(case_name, task_cname)
 		file_name = "{:08}-result.json".format(index)
 		with open(os.path.join(workitems_path, file_name), "w") as f:
-			json.dump(result.to_native(), f)
+			json.dump(result.to_native(), f, self.DUMP_OPTIONS)
 
 	def load_workitem_result(self, case_name, task_cname, index):
 		workitems_path = self.__workitems_path(case_name, task_cname)
@@ -118,7 +122,8 @@ class FilesProvider(DataProvider):
 		if data_ref.mode == PORT_MODE_IN:
 			port_sources = []
 			for ref in data_ref.refs:
-				port_sources += [SourceData(self.__port_path(case_name, ref.component_cname, ref.port_name))]
+				port_source = SourceData(self.__port_path(case_name, ref.component_cname, ref.port_name))
+				port_sources += [port_source]
 			return FilesInPort(self, port_sources, data_ref.start, data_ref.size)
 		elif data_ref.mode == PORT_MODE_OUT:
 			port_source = SourceData(self.__port_path(case_name, data_ref.component_cname, data_ref.port_name))

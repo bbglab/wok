@@ -32,7 +32,7 @@ class McoreJobManager(JobManager):
 	def __init__(self, conf):
 		JobManager.__init__(self, "mcore", conf)
 
-		self._num_cores = self._conf.get("num_cores", mp.cpu_count(), dtype=int)
+		self._num_cores = self._conf.get("max_cores", mp.cpu_count(), dtype=int)
 
 		self._running = False
 		self._kill_threads = False
