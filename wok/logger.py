@@ -24,7 +24,7 @@ import logging.handlers
 
 from wok.config.data import Data
 
-_DEFAULT_FORMAT = "%(asctime)s %(name)-20s [%(levelname)-5s] %(message)s"
+_DEFAULT_FORMAT = "%(asctime)s %(name)-20s [%(levelname)-7s] %(message)s"
 #_DEFAULT_FORMAT = "%(asctime)s %(module)s %(funcName)s %(name)s %(levelname) -5s : %(message)s"
 
 _DEFAULT_DATEFMT = "%Y-%m-%d %H:%M:%S"
@@ -164,6 +164,16 @@ def get_handler(logger, conf):
 
 	handler = _HANDLERS[type](conf)
 
+	level = conf.get("level")
+	if level is not None:
+		handler.setLevel(get_level(level))
+
+	format = conf.get("format", _DEFAULT_FORMAT)
+	if format is not None:
+		if Data.is_list(format):
+			format = "".join(format.to_native())
+		handler.setFormatter(logging.Formatter(format))
+
 	return handler
 
 def get_smtp_handler(conf):
@@ -187,20 +197,35 @@ def get_smtp_handler(conf):
 	toaddr = conf.get("to")
 	subject = conf.get("subject")
 
-	handler = logging.handlers.SMTPHandler(mailhost, fromaddr, toaddr, subject, credentials, tuple())
+	return logging.handlers.SMTPHandler(mailhost, fromaddr, toaddr, subject, credentials, tuple())
 
-	level = conf.get("level")
-	if level is not None:
-		handler.setLevel(get_level(level))
+def get_file_handler(conf):
+	_log = logging.getLogger(__name__)
+	mf = conf.missing_fields(["filename"])
+	if len(mf) != 0:
+		_log.error("The following fields for the handler are missing: {0}\n{1}".format(", ".join(mf), repr(conf)))
+		return
 
-	format = conf.get("format")
-	if format is not None:
-		if Data.is_list(format):
-			format = "".join(format.to_native())
-		handler.setFormatter(logging.Formatter(format))
+	filename = conf["filename"]
+	mode = conf.get("mode", "a")
 
-	return handler
+	return logging.FileHandler(filename, mode)
+
+def get_timed_rotating_file_handler(conf):
+	_log = logging.getLogger(__name__)
+	mf = conf.missing_fields(["filename", "when", "interval"])
+	if len(mf) != 0:
+		_log.error("The following fields for the handler are missing: {0}\n{1}".format(", ".join(mf), repr(conf)))
+		return
+
+	filename = conf["filename"]
+	when = conf["when"]
+	interval = conf["interval"]
+
+	return logging.handlers.TimedRotatingFileHandler(filename, when, interval)
 
 _HANDLERS = {
-	"smtp" : get_smtp_handler
+	"smtp" : get_smtp_handler,
+	"file" : get_file_handler,
+	"timed_rotating_file" : get_timed_rotating_file_handler
 }
