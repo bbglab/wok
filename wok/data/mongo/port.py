@@ -70,7 +70,7 @@ class MongoInPort(Port):
 					raise
 
 				coll = self._collections[self._coll_index]
-				coll_size = coll.size()
+				coll_size = coll.count()
 				self._coll_skip = 0
 				self._coll_limit = min(coll_size, self._size)
 
