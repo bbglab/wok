@@ -101,6 +101,8 @@ class WokEngine(Synchronizable):
 		recover = wok_conf.get("recover", False)
 
 		db_path = os.path.join(self._work_path, "engine.db")
+		if not recover and os.path.exists(db_path):
+			os.remove(db_path)
 		self._db = db.create_engine("sqlite:///{}".format(db_path), drop_tables=not recover)
 
 		self._platform = self._create_platform()
