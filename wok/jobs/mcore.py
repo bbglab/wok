@@ -1,6 +1,7 @@
 import os
 import time
 import tempfile
+import signal
 import subprocess
 import multiprocessing as mp
 from threading import Thread, Lock, Condition, current_thread
@@ -57,7 +58,7 @@ class McoreJobManager(JobManager):
 	def _next_job(self, session):
 		timeout = ProgressiveTimeout(0.5, 6.0, 0.5)
 		job = None
-		while job is None and self._running and not self._kill_threads:
+		while job is None and self._running:
 			try:
 				with self._lock:
 					job = session.query(McoreJob).filter(McoreJob.state == runstates.WAITING)\
@@ -68,7 +69,7 @@ class McoreJobManager(JobManager):
 			except Exception as e:
 				self._log.exception(e)
 				job = None
-			if job is None and self._running and not self._kill_threads:
+			if job is None and self._running:
 				timeout.sleep() #TODO Guess how to use a Condition (self._run_cvar) or an Event
 
 		return job
@@ -131,7 +132,8 @@ class McoreJobManager(JobManager):
 										stdout=o,
 										stderr=subprocess.STDOUT,
 										cwd=cwd,
-										env=env)
+										env=env,
+										preexec_fn=os.setsid)
 
 					set_thread_title("{} PID={}".format(job.name, process.pid))
 
@@ -145,7 +147,8 @@ class McoreJobManager(JobManager):
 
 					if process.poll() is None: # and (self._kill_threads or job.state != runstates.RUNNING):
 						self._log.info("Killing job [{}] {} ...".format(job.id, job.name))
-						process.terminate()
+						#process.terminate()
+						os.killpg(process.pid, signal.SIGTERM)
 						timeout = ProgressiveTimeout(0.5, 6.0, 0.5)
 						while process.poll() is None:
 							timeout.sleep()
@@ -166,14 +169,17 @@ class McoreJobManager(JobManager):
 					job.finished = datetime.now()
 					job.exitcode = exit_codes.RUN_THREAD_EXCEPTION
 				finally:
+					try:
+						if process.poll() is None:
+							#process.kill()
+							os.killpg(process.pid, signal.SIGKILL)
+						#process.wait()
+						os.waitpid(process.pid)
+					except:
+						pass
 					o.close()
 					if os.path.exists(script_path):
 						os.remove(script_path)
-
-				try:
-					process.wait()
-				except:
-					pass
 
 				if job.state == runstates.FINISHED:
 					self._log.debug("Job finished [{}] {}".format(job.id, job.name))
@@ -227,9 +233,9 @@ class McoreJobManager(JobManager):
 			session.expire(job, [McoreJob.state])
 
 	def _close(self):
+		self._running = False
+		self._kill_threads = False
 		with self._run_lock:
-			self._running = False
-			self._kill_threads = False
 			self._run_cvar.notify(self._num_cores)
 
 		for thread in self._threads:
