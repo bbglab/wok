@@ -3,7 +3,7 @@ import time
 import tempfile
 import subprocess
 import multiprocessing as mp
-from threading import Thread, Lock, Condition
+from threading import Thread, Lock, Condition, current_thread
 from datetime import datetime
 
 from sqlalchemy import Column, Boolean, String
@@ -57,7 +57,7 @@ class McoreJobManager(JobManager):
 	def _next_job(self, session):
 		timeout = ProgressiveTimeout(0.5, 6.0, 0.5)
 		job = None
-		while job is None and self._running:
+		while job is None and self._running and not self._kill_threads:
 			try:
 				with self._lock:
 					job = session.query(McoreJob).filter(McoreJob.state == runstates.WAITING)\
@@ -68,8 +68,8 @@ class McoreJobManager(JobManager):
 			except Exception as e:
 				self._log.exception(e)
 				job = None
-			if job is None and self._running:
-				timeout.sleep() #TODO Use a Condition --> self._run_cvar or better an Event
+			if job is None and self._running and not self._kill_threads:
+				timeout.sleep() #TODO Guess how to use a Condition (self._run_cvar) or an Event
 
 		return job
 
@@ -117,7 +117,7 @@ class McoreJobManager(JobManager):
 
 				# Prepare the script file
 
-				script_path = tempfile.mkstemp(prefix=job.name, suffix=".sh")[1]
+				script_path = tempfile.mkstemp(prefix=job.name + "-", suffix=".sh")[1]
 				with open(script_path, "w") as f:
 					f.write(script)
 
@@ -170,6 +170,11 @@ class McoreJobManager(JobManager):
 					if os.path.exists(script_path):
 						os.remove(script_path)
 
+				try:
+					process.wait()
+				except:
+					pass
+
 				if job.state == runstates.FINISHED:
 					self._log.debug("Job finished [{}] {}".format(job.id, job.name))
 				elif job.state == runstates.ABORTED:
@@ -179,6 +184,8 @@ class McoreJobManager(JobManager):
 
 				self._update_job(session, job)
 
+		except:
+			self._log.exception("Unexpected exception in thread {}".format(current_thread().name))
 		finally:
 			session.close()
 
@@ -231,5 +238,4 @@ class McoreJobManager(JobManager):
 				thread.join(1)
 				timeout -= 1
 				if timeout == 0:
-					timeout = 30
 					self._kill_threads = True

@@ -17,7 +17,7 @@ Base = declarative_base()
 Session = scoped_session(sessionmaker())
 
 def create_engine(uri):
-	engine = sqlalchemy.create_engine(uri, connect_args=dict(timeout=60, check_same_thread=False))
+	engine = sqlalchemy.create_engine(uri, connect_args=dict(timeout=1800, check_same_thread=False))
 	Session.configure(bind=engine)
 	Base.metadata.create_all(engine)
 	return engine
