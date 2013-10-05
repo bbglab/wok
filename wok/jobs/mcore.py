@@ -145,9 +145,8 @@ class McoreJobManager(JobManager):
 
 					job.finished = datetime.now()
 
-					if process.poll() is None: # and (self._kill_threads or job.state != runstates.RUNNING):
+					if process.poll() is None:
 						self._log.info("Killing job [{}] {} ...".format(job.id, job.name))
-						#process.terminate()
 						os.killpg(process.pid, signal.SIGTERM)
 						timeout = ProgressiveTimeout(0.5, 6.0, 0.5)
 						while process.poll() is None:
@@ -171,12 +170,12 @@ class McoreJobManager(JobManager):
 				finally:
 					try:
 						if process.poll() is None:
-							#process.kill()
+							self._log.info("Killing job [{}] {} ...".format(job.id, job.name))
 							os.killpg(process.pid, signal.SIGKILL)
-						#process.wait()
-						os.waitpid(process.pid)
+						process.wait()
 					except:
-						pass
+						self._log.exception("Exception while waiting for process {} to finish".format(process.pid))
+
 					o.close()
 					if os.path.exists(script_path):
 						os.remove(script_path)
