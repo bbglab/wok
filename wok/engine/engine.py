@@ -65,7 +65,9 @@ class WokEngine(Synchronizable):
 
 		self._global_conf = conf
 
-		self._conf = wok_conf = conf["wok"]
+		self._expanded_global_conf = conf.clone().expand_vars()
+
+		self._conf = wok_conf = self._expanded_global_conf["wok"]
 
 		self._log = logger.get_logger("wok.engine")
 
