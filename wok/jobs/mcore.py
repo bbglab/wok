@@ -118,8 +118,8 @@ class McoreJobManager(JobManager):
 
 				# Prepare the script file
 
-				script_path = tempfile.mkstemp(prefix=job.name + "-", suffix=".sh")[1]
-				with open(script_path, "w") as f:
+				fd, script_path = tempfile.mkstemp(prefix=job.name + "-", suffix=".sh")
+				with os.fdopen(fd, "w") as f:
 					f.write(script)
 
 				# Run the script
