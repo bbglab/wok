@@ -204,6 +204,8 @@ class WokServer(object):
 			raise Exception("The server can not be run without the app")
 
 		try:
+			self.logger.info("Listening on {}:{} ...".format(args.host, args.port))
+
 			app.run(
 				host=args.host,
 				port=args.port,
@@ -295,8 +297,8 @@ class WokServer(object):
 		case.engine_name = engine_case_name
 		session.commit()
 
-		if start:
-			engine_case.start()
+		#TODO if start:
+		#	engine_case.start()
 
 		return case
 

@@ -844,6 +844,7 @@ class Case(object):
 
 			if component == self.root_node:
 				elapsed = component.finished - component.started
+
 				self._log.info("Case {} {}. Total time: {}".format(self.name, state.title, str(elapsed)))
 
 	def update_states(self, session, component=None):

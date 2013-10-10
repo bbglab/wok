@@ -6,10 +6,11 @@ from threading import current_thread
 
 def set_proc_title(title):
 	try:
-		from setproctitle import setproctitle
-		setproctitle(title)
+		pass
+		#from setproctitle import setproctitle
+		#setproctitle(title)
 	except:
-	   pass
+		pass
 
 def set_thread_title(title=None):
 	if title is None:

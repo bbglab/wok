@@ -364,6 +364,9 @@ class WokEngine(Synchronizable):
 					case.update_count_by_state(session)
 					case.clean_components(session)
 
+					#if case.state in runstates.TERMINAL_STATES:
+					#	_log.info("Case {} {}. Total time: {}".format(case.name, case.state.title, str(case.elapsed)))
+
 				for component in updated_components:
 					case = component.case
 					#_log.debug("[{}] Component {} updated state to {} ...".format(
