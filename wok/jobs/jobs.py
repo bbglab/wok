@@ -191,7 +191,7 @@ class JobManager(object):
 
 			if job is None:
 				session.close()
-				return
+				return JobResults()
 
 			self._log.debug("Joining job [{}] {} ...".format(job.id, job.name))
 

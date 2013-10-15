@@ -29,6 +29,7 @@ import threading
 from multiprocessing import cpu_count
 from datetime import datetime
 
+from sqlalchemy import func
 from sqlalchemy.orm.exc import NoResultFound
 from blinker import Signal
 
@@ -264,12 +265,12 @@ class WokEngine(Synchronizable):
 
 				session = db.Session()
 
-				updated_components = set()
+				updated_tasks = set()
 
 				# schedule tasks ready to be executed and save new workitems into the db
 				for case in self._cases:
-					components = case.schedule(session)
-					updated_components.update(components)
+					tasks = case.schedule(session)
+					updated_tasks.update(tasks)
 					session.commit()
 
 				# submit workitems ready to be executed
@@ -280,7 +281,7 @@ class WokEngine(Synchronizable):
 					workitem.state = job_state
 					js.task.dirty = True
 					session.commit()
-					updated_components.add(js.task)
+					updated_tasks.add(js.task)
 
 				session.close()
 
@@ -288,7 +289,7 @@ class WokEngine(Synchronizable):
 
 				set_thread_title("waiting")
 
-				while len(updated_components) == 0 and not self._notified and self._running:
+				while len(updated_tasks) == 0 and not self._notified and self._running:
 					self._cvar.wait(1)
 				self._notified = False
 
@@ -344,9 +345,11 @@ class WokEngine(Synchronizable):
 						case = self._cases_by_name[workitem.case.name]
 						task = case.component(workitem.task.cname)
 						task.dirty = True
+
 						workitem.state = state
+						workitem.substate = runstates.LOGS_RETRIEVAL
 						session.commit()
-						updated_components.add(task)
+						updated_tasks.add(task)
 
 						# if workitem has finished, queue it for logs retrieval
 						if state in runstates.TERMINAL_STATES:
@@ -354,43 +357,28 @@ class WokEngine(Synchronizable):
 
 						_log.debug("[{}] Work-Item {} changed state to {}".format(case.name, workitem.cname, state))
 
-				#_log.debug("Updating components state ...\n" + "\n".join("\t{}".format(m.cname) for m in sorted(updated_modules)))
 				#_log.debug("Updating components state ...")
 
 				# update affected components state
-				updated_cases = set([c.case for c in updated_components])
+				updated_cases = set([task.case for task in updated_tasks])
 				for case in updated_cases:
 					case.update_states(session)
 					case.update_count_by_state(session)
 					case.clean_components(session)
 
-					#if case.state in runstates.TERMINAL_STATES:
-					#	_log.info("Case {} {}. Total time: {}".format(case.name, case.state.title, str(case.elapsed)))
-
-				for component in updated_components:
-					case = component.case
+				for task in updated_tasks:
+					case = task.case
 					#_log.debug("[{}] Component {} updated state to {} ...".format(
 					#				component.case.name, component.cname, component.state))
 
-					#if self._log.isEnabledFor(logging.INFO):
-					tcount = component.case.task_count_by_state
-					count = component.workitem_count_by_state
-					sb = ["[{}] {} ({})".format(component.case.name, component.cname, component.state.title)]
+					count = task.workitem_count_by_state
+					sb = ["[{}] {} ({})".format(case.name, task.cname, task.state.title)]
 					sep = " "
 					for state in runstates.STATES:
 						if state in count:
 							sb += [sep, "{}={}".format(state.symbol, count[state])]
 							if sep == " ":
 								sep = ", "
-					"""
-					sb += [" ::"]
-					sep = " "
-					for state in runstates.STATES:
-						if state in tcount:
-							sb += [sep, "{}={}".format(state.symbol, tcount[state])]
-							if sep == " ":
-								sep = ", "
-					"""
 
 					self._log.info("".join(sb))
 
@@ -454,9 +442,6 @@ class WokEngine(Synchronizable):
 
 				_log.debug("[{}] Reading logs for work-item {} ...".format(case.name, workitem.cname))
 
-				workitem.state_msg = "Reading logs"
-				session.commit()
-
 				output = self._platform.jobs.output(job_id)
 				if output is None:
 					output = StringIO.StringIO()
@@ -485,7 +470,9 @@ class WokEngine(Synchronizable):
 				_log.exception("Exception in wok-engine logs thread ({})".format(num_exc))
 
 			finally:
+				workitem.substate = runstates.JOINING
 				self._join_queue.put(job_info)
+				session.commit()
 				session.close()
 
 		_log.debug("Engine logs thread finished")
@@ -525,8 +512,6 @@ class WokEngine(Synchronizable):
 				with self._lock:
 					jr = self._platform.jobs.join(job_id) # TODO per case platform
 
-					r = self._platform.data.load_workitem_result(case.name, task.cname, workitem.index)
-
 					wr = Data.element(dict(
 							hostname=jr.hostname,
 							created=jr.created.strftime(_DT_FORMAT) if jr.created is not None else None,
@@ -534,19 +519,27 @@ class WokEngine(Synchronizable):
 							finished=jr.finished.strftime(_DT_FORMAT) if jr.finished is not None else None,
 							exitcode=jr.exitcode.code if jr.exitcode is not None else None))
 
+					r = self._platform.data.load_workitem_result(case.name, task.cname, workitem.index)
+
 					if r is not None:
 						if r.exception is not None:
 							wr["exception"] = r.exception
 						if r.trace is not None:
 							wr["trace"] = r.trace
 
+					workitem.substate = None
 					workitem.result = wr
-					workitem.state_msg = ""
+
+					case.num_active_workitems -= 1
+
 					session.commit()
 
+					if case.state in runstates.TERMINAL_STATES and case.num_active_workitems == 0:
+						_log.info("Case {} {}. Total time: {}".format(case.name, case.state.title, str(case.elapsed)))
+
 					# check if there are still more work-items
-					num_workitems = session.query(db.WorkItem).filter(
-						~db.WorkItem.state.in_(runstates.TERMINAL_STATES)).count()
+					num_workitems = session.query(func.count(db.WorkItem.id)).filter(
+						~db.WorkItem.state.in_(runstates.TERMINAL_STATES)).scalar()
 
 					if self._single_run and num_workitems == 0:
 						stop_engine = True
@@ -559,7 +552,6 @@ class WokEngine(Synchronizable):
 					_log.debug("[{}] Joined work-item {}".format(case.name, workitem.cname))
 
 					# check stopping instances
-					case = self._cases_by_name[workitem.case.name]
 					if case in self._stopping_cases:
 						job_ids = self._stopping_cases[case]
 						if job_id in job_ids:

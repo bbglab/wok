@@ -157,7 +157,7 @@ class WorkItem(Base):
 
 	index = Column(Integer)
 	state = Column(RunState)
-	state_msg = Column(String)
+	substate = Column(RunState)
 
 	partition = Column(Config)
 

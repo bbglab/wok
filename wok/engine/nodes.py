@@ -90,7 +90,7 @@ class ComponentNode(ModelNode):
 		self._dirty = False
 
 		self.state = runstates.READY
-		self.state_msg = ""
+		self.substate = None
 
 		self.priority = None
 		self.priority_factor = None
@@ -239,8 +239,8 @@ class ComponentNode(ModelNode):
 
 	def to_element(self, e = None):
 		e = ModelNode.to_element(self, e)
-		e["state"] = str(self.state)
-		e["state_msg"] = self.state_msg
+		e["state"] = self.state.title
+		e["substate"] = self.substate.title
 		e["priority"] = self.priority
 		e["depends"] = [m.cname for m in self.depends]
 		e["waiting"] = [m.cname for m in self.waiting]
@@ -355,7 +355,7 @@ class TaskNode(ComponentNode):
 		return level
 
 class WorkItemNode(Node):
-	def __init__(self, parent, index, id=None, namespace="", state=runstates.READY, state_msg="", partition=None):
+	def __init__(self, parent, index, id=None, namespace="", state=runstates.READY, substate=None, partition=None):
 		Node.__init__(self, parent, namespace=namespace)
 
 		self.id = id
@@ -363,7 +363,7 @@ class WorkItemNode(Node):
 		self.index = index
 
 		self.state = state
-		self.state_msg = state_msg
+		self.substate = substate
 
 		self.partition = partition or Data.element()
 
@@ -381,6 +381,8 @@ class WorkItemNode(Node):
 	def repr_level(self, sb, level):
 		level = Node.repr_level(self, sb, level)
 		sb.extend([self._INDENT * level, "Index: ", str(self.index), "\n"])
+		if self.substate is not None:
+			sb.extend([self._INDENT * level, "Substate: ", str(self.substate), "\n"])
 		sb.extend([self._INDENT * level, "State: ", str(self.state), "\n"])
 		sb.extend([self._INDENT * level, "Partition: ", repr(self.partition), "\n"])
 
