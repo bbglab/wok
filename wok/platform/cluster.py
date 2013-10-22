@@ -3,7 +3,7 @@ import subprocess
 from urlparse import urlparse
 
 from wok.core.cmd import FLOW_PATH, SCRIPT_PATH, MODULE_SCRIPT_PATH
-from wok.core.errors import ConfigMissingError
+from wok.core.errors import MissingConfigParamError
 
 from platform import Platform
 
@@ -22,7 +22,7 @@ class ClusterPlatform(Platform):
 		Platform.__init__(self, "cluster", conf)
 
 		if "files_url" not in self._conf:
-			raise ConfigMissingError("files_url")
+			raise MissingConfigParamError("files_url")
 
 		url = urlparse(self._conf["files_url"])
 		self._files_scheme = url.scheme

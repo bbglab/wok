@@ -5,7 +5,7 @@ from datetime import datetime
 from wok import logger
 from wok.core import runstates
 from wok.core import events
-from wok.core.errors import ConfigMissingError
+from wok.core.errors import MissingConfigParamError
 from wok.core.callback import CallbackManager
 from wok.jobs.db import create_engine, Session, Job, JobResults
 
@@ -63,7 +63,7 @@ class JobManager(object):
 		self._log = logger.get_logger("wok.jobs.{}".format(name))
 
 		if "work_path" not in self._conf:
-			raise ConfigMissingError("work_path")
+			raise MissingConfigParamError("work_path")
 
 		self._work_path = conf["work_path"]
 		if not os.path.exists(self._work_path):

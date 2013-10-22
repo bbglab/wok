@@ -25,7 +25,7 @@ from wok.config import COMMAND_CONF
 from wok.config.data import Data
 
 from cmd import CommmandBuilder
-from constants import FLOW_PATH, SCRIPT_PATH, MODULE_SCRIPT_PATH
+from constants import FLOW_PATH, SCRIPT_PATH, MODULE_SCRIPT_PATH, CTX_EXEC
 from wok.core.errors import MissingValueError, LanguageError
 
 
@@ -54,9 +54,9 @@ class NativeCommmandBuilder(CommmandBuilder):
 
 		lang = exec_conf.get("language", "python")
 
-		mod_conf = case.conf.clone().expand_vars()
+		case_conf = case.conf.clone().expand_vars()
 
-		cmd_conf = mod_conf.get(COMMAND_CONF, default=Data.element)
+		cmd_conf = case_conf.get(COMMAND_CONF, default=Data.element)
 		#native_conf = cmd_conf.get("default", default=Data.element)
 		#native_conf.merge(cmd_conf.get("native", default=Data.element))
 
@@ -122,8 +122,11 @@ class NativeCommmandBuilder(CommmandBuilder):
 		#for key, value in self._storage_conf(workitem.case.engine.storage.basic_conf):
 		#	cmd += ["-D", "storage.{}={}".format(key, value)]
 
-		for key, value in self._plain_conf(Data.create(case.platform.data.bootstrap_conf)):
+		for key, value in self._plain_conf(Data.create(case.platform.data.context_conf(CTX_EXEC))):
 			cmd += ["-D", "data.{}={}".format(key, value)]
+
+		for key, value in self._plain_conf(case.platform.storage.context_conf(CTX_EXEC)):
+			cmd += ["-D", "storage.{}={}".format(key, value)]
 
 		script += [" ".join(cmd)]
 		

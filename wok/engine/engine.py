@@ -151,7 +151,7 @@ class WokEngine(Synchronizable):
 		self.notify()
 
 	def __recover_from_db(self):
-		raise errors.UnimplementedError()
+		raise NotImplementedError()
 
 	def __queue_adaptative_get(self, queue, start_timeout=1.0, max_timeout=6.0):
 		timeout = start_timeout
@@ -223,6 +223,10 @@ class WokEngine(Synchronizable):
 		# remove data
 		self._log.debug("  * data ...")
 		case.platform.data.remove_case(case.name)
+
+		# remove storage
+		self._log.debug("  * storage ...")
+		case.platform.storage.delete_container(case.name)
 
 		# remove engine db objects and finalize case
 		self._log.debug("  * database ...")
@@ -365,6 +369,7 @@ class WokEngine(Synchronizable):
 					case.update_states(session)
 					case.update_count_by_state(session)
 					case.clean_components(session)
+					session.commit()
 
 				for task in updated_tasks:
 					case = task.case

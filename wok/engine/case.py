@@ -56,16 +56,14 @@ class Case(object):
 		self.created = datetime.now()
 		
 		self.conf = None
-		self.conf_builder = ConfigBuilder()
-		self.conf_builder.add_value("wok.__case.name", name)
-		self.conf_builder.add_builder(conf_builder)
+		self.conf_builder = conf_builder
 
 		self.flow_uri = flow_uri
 		self.root_flow = None
 
 		self.engine = engine
 		self.platform = platform
-		self._project = None
+		self.project = None
 
 		self._state = runstates.READY
 
@@ -88,12 +86,11 @@ class Case(object):
 		case_conf = self.conf.get("wok.case", default=Data.element)
 
 		case_conf["name"] = self.name
-		
-		self.title = case_conf.get("title")
+		self.title = case_conf.get("title", self.name)
 
 		self.root_flow = self.engine.projects.load_flow(self.flow_uri)
 
-		self._project = self.root_flow.project
+		self.project = self.root_flow.project
 
 		# self._log.debug("\n" + repr(self.root_flow))
 
@@ -106,7 +103,7 @@ class Case(object):
 		self._component_rules = case_conf.get("component_rules", default=Data.element)
 
 		# reset state
-		self._state = runstates.READY
+		self._state = runstates.PAUSED
 
 		# create nodes tree
 		self.root_node = self._create_tree(self.root_flow)
@@ -199,7 +196,7 @@ class Case(object):
 
 	@property
 	def project(self):
-		return self._project
+		return self.project
 
 	@property
 	def state(self):
@@ -249,7 +246,7 @@ class Case(object):
 				comp.set_in_ports(self._create_port_nodes(comp, comp_def.in_ports, ns, mns))
 				comp.set_out_ports(self._create_port_nodes(comp, comp_def.out_ports, ns, mns))
 			else:
-				sub_flow_def = self._project.load_from_ref(comp_def.flow_ref)
+				sub_flow_def = self.project.load_from_ref(comp_def.flow_ref)
 				self._override_component(sub_flow_def, comp_def)
 				comp = self._create_tree(sub_flow_def, parent=flow, namespace=ns)
 				# Import flow ports defined in the module definition
@@ -659,7 +656,7 @@ class Case(object):
 		:return: list of updated modules.
 		"""
 
-		if self.state in runstates.TERMINAL_STATES:
+		if self._state in [runstates.PAUSED] + runstates.TERMINAL_STATES:
 			return []
 
 		updated_components = []
@@ -862,10 +859,10 @@ class Case(object):
 		if self.update_component_state(component, children_states):
 			session.query(db.Component).filter(db.Component.id == component.id)\
 					.update({db.Component.state : component.state})
-			if component == self.root_node:
+			if component == self.root_node and self._state != runstates.PAUSED:
 				self.state = component.state # update case state from the root node
 				session.query(db.Case).filter(db.Case.id == self.id).update({db.Case.state : self.state})
-			session.commit()
+			#session.commit()
 
 	def update_component_state(self, component, children_states):
 		"""
@@ -960,24 +957,19 @@ class Case(object):
 			for child in component.children:
 				self.clean_components(session, child)
 	
-	def _prepare_for_continue(self, module = None):
+	def _reset_failures(self, session):
 		"""
-		Resets all failed or aborted modules to allow continuation of execution.
-		It is called just after a failure or stop before calling start again.
+		Resets all failed or aborted tasks to allow continuation of execution.
+		It is called before calling start when there has been a failure or stop.
 		"""
 
-		if module is None:
-			module = self.root_node
+		session.query(db.WorkItem).filter(db.WorkItem.case_id == self.id)\
+			.filter(db.WorkItem.state._in([runstates.FAILED, runstates.ABORTED]))\
+			.update({db.WorkItem.state : runstates.READY, db.WorkItem.substate : None})
 
-		if module.state in [runstates.FAILED, runstates.ABORTED]:
-			module.state = runstates.RUNNING
-			if module.is_leaf:
-				for t in module.tasks:
-					if t.state in [runstates.FAILED, runstates.ABORTED]:
-						t.state = runstates.READY
-			for m in module.children:
-				self._prepare_for_continue(m)
+		self.update_states(session)
 
+	#FIXME review
 	def _reset(self, module = None):
 		"Resets the state of the module and its children to an initial state."
 
@@ -1000,29 +992,37 @@ class Case(object):
 								runstates.FAILED, runstates.ABORTED]:
 			raise Exception("Illegal action '%s' for state '%s'" % ("start", self.state))
 
-		if self.state in [runstates.FAILED, runstates.ABORTED]:
-			self._prepare_for_continue()
-		
-		self.state = runstates.RUNNING
+		session = db.Session()
 
-		self._log.info("Case started: {}".format(self.name))
+		if self.state in [runstates.FAILED, runstates.ABORTED]:
+			self._reset_failures(session)
+		
+		self.state = runstates.READY
+		session.query(db.Case).filter(db.Case.id == self.id).update({db.Case.state : self.state})
+
+		session.commit()
+		session.close()
+
+		self._log.info("Case {} started".format(self.name))
 
 	def pause(self):
 		if self.state not in [runstates.RUNNING, runstates.PAUSED]:
 			raise Exception("Illegal action '%s' for state '%s'" % ("pause", self.state))
 
+		# FIXME update component state in the database
 		self.state = runstates.PAUSED
 
-		self._log.info("Case paused: {}".format(self.name))
+		self._log.info("Case {} paused".format(self.name))
 
 	def stop(self):
 		if self.state not in [runstates.RUNNING, runstates.PAUSED]:
 			raise Exception("Illegal action '%s' for state '%s'" % ("stop", self.state))
 
+		# FIXME update component state in the database
 		if self.state != runstates.READY:
 			self.state = runstates.ABORTING
 
-		self._log.info("Case aborted: {}".format(self.name))
+		self._log.info("Case {} aborted".format(self.name))
 
 	def reset(self):
 		if self.state not in [runstates.READY, runstates.PAUSED, runstates.FINISHED,
@@ -1031,12 +1031,13 @@ class Case(object):
 
 		self._reset()
 
+		# FIXME update component state in the database
 		self.state = runstates.READY
 
-		self._log.info("Case reset: {}".format(self.name))
+		self._log.info("Case {} reset".format(self.name))
 
 	def reload(self):
-		self._log.info("Case reload: {}".format(self.name))
+		self._log.info("Case {} reloaded".format(self.name))
 
 		raise Exception("Unimplemented")
 
@@ -1083,6 +1084,10 @@ class Case(object):
 
 		session.close()
 		return q
+
+	@property
+	def storage(self):
+		return self.platform.storage.get_container(self.name)
 
 	#TODO
 	"""
@@ -1145,7 +1150,7 @@ class SynchronizedCase(Synchronizable):
 		self.__case = case;
 
 	def __getattr__(self, name):
-		if name in ["name", "title", "state", "created", "started", "finished", "elapsed"]:
+		if name in ["name", "title", "state", "created", "started", "finished", "elapsed", "storage"]:
 			return getattr(self.__case, name)
 		else:
 			return AttributeError(name)

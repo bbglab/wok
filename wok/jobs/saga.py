@@ -248,7 +248,7 @@ class SagaJobManager(JobManager):
 				try:
 					self._log.debug("Removing remote output for [{}] {} ...".format(job.id, job.name))
 					remote_path = "{}{}".format(self._file_url, jd.output)
-					ofile = saga.filesystem.File(remote_path)
+					ofile = saga.filesystem.File(remote_path, session=self._session)
 					ofile.remove()
 				except Exception as ex:
 					self._log.error("Couldn't remove remote job output file.")
@@ -373,7 +373,7 @@ class SagaJobManager(JobManager):
 
 		try:
 			self._lock.release()
-			ofile = saga.filesystem.File(remote_path)
+			ofile = saga.filesystem.File(remote_path, session=self._session)
 			ofile.copy("file://{}".format(local_path))
 			self._lock.acquire()
 			return open(local_path)

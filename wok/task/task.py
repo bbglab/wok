@@ -27,7 +27,8 @@ import signal
 from wok import logger
 from wok.config.data import Data
 from wok.config.cli import OptionsConfig
-from wok.data import create_data_provider, Stream
+from wok.data import data_provider_factory, Stream
+from wok.storage import storage_factory
 from wok.data.portref import PortDataRef, PORT_MODE_IN, PORT_MODE_OUT
 
 from wok.core.task_result import TaskResult
@@ -39,19 +40,20 @@ class MissingRequiredPorts(Exception):
 	def __init__(self, missing_ports, mode):
 		Exception.__init__(self, "Missing required {0} ports: {1}".format(mode, ", ".join(missing_ports)))
 
+# FIXME use wok.errors.MissingConfigParamsError
 class MissingRequiredConf(Exception):
 	def __init__(self, missing_keys):
 		Exception.__init__(self, "Missing required configuration: {0}".format(", ".join(missing_keys)))
 
 class Task(object):
 	"""
-	Processes a data partition of a module in a flow.
+	Processes a task data partition.
 	"""
 	
 	def __init__(self):
 
 		# Get task key and storage configuration
-		cmd_conf = OptionsConfig(required=["case", "task", "index", "data.type"])
+		cmd_conf = OptionsConfig(required=["case", "task", "index", "data.type", "storage.type"])
 
 		# Register signals
 		self._signal_names = {}
@@ -70,8 +72,13 @@ class Task(object):
 
 		# initialize the data provider
 		provider_conf = cmd_conf["data"]
-		self._provider = create_data_provider(provider_conf["type"], provider_conf)
+		self._provider = data_provider_factory.create(provider_conf)
 		self._provider.start()
+
+		# initialize storage
+		storage_conf = cmd_conf["storage"]
+		self.storage = storage_factory.create(storage_conf)
+		self.storage = self.storage.get_container(case_name)
 
 		# load the module and task descriptors
 		task_desc = self._provider.load_task(case_name, task_cname)

@@ -17,11 +17,13 @@ class MongoProvider(DataProvider):
 	    **log**: logging configuration
 	"""
 
-	def __init__(self, conf):
-		DataProvider.__init__(self, "mongo", conf)
+	name = "mongo"
 
+	def __init__(self, conf):
+		super(MongoProvider, self).__init__(conf)
+
+		# http://docs.mongodb.org/manual/reference/connection-string/
 		self._url = conf.get("url", "mongodb://localhost")
-		self._exec_url = conf.get("exec_url", self._url)
 		self._database = conf.get("database", "wok")
 
 		self._client = None
@@ -48,18 +50,16 @@ class MongoProvider(DataProvider):
 			return c
 		return c[port_name]
 
-	@property
-	def bootstrap_conf(self):
-		return dict(
-			type=self._conf["type"],
-			url=self._exec_url,
-			database=self._database)
-
 	def start(self):
 		self._log.debug("Connecting to {} ...".format(self._url))
 
 		self._client = pymongo.MongoClient(self._url)
-		self._db = self._client[self._database]
+		if isinstance(self._client, pymongo.database.Database):
+			self._db = self._client
+			if database is not None:
+				raise StorageError("Database already specified in the url")
+		else:
+			self._db = self._client[self._database]
 
 	def close(self):
 		if self._client is not None:
