@@ -27,10 +27,10 @@ class MongoInPort(Port):
 		coll = self._collections[0]
 		coll_size = coll.count()
 
-		while start - coll_size > 0 and index < len(self._collections):
+		while start >= coll_size and index < len(self._collections):
 			index += 1
-			coll = self._collections[index]
 			start -= coll_size
+			coll = self._collections[index]
 			coll_size = coll.count()
 			
 		self._coll_index = index
@@ -70,7 +70,7 @@ class MongoInPort(Port):
 					raise
 
 				coll = self._collections[self._coll_index]
-				coll_size = coll.size()
+				coll_size = coll.count()
 				self._coll_skip = 0
 				self._coll_limit = min(coll_size, self._size)
 

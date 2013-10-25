@@ -24,9 +24,7 @@ class SourceData(object):
 
 	def _connection(self):
 		if self._db is None:
-			#create = not os.path.exists(self._path)
 			self._db = sqlite3.connect(self._path, timeout=1800)
-			#if create:
 			with FileLockEx("{}.lock".format(self._path), "r+") as f:
 				if f.read() != "1":
 					self._create()
@@ -109,11 +107,13 @@ class FilesInPort(Port):
 		src = self._sources[0]
 		src_size = src.count()
 
-		while start - src_size > 0 and index < len(self._sources):
+		while start >= src_size and index < len(self._sources):
 			index += 1
-			src = self._sources[index]
 			start -= src_size
+			src = self._sources[index]
 			src_size = src.count()
+
+		assert index < len(self._sources)
 
 		self._src_index = index
 		self._src_skip = start
@@ -125,7 +125,7 @@ class FilesInPort(Port):
 		kwargs = dict()
 		if self._src_skip > 0:
 			kwargs["skip"] = self._src_skip
-		if self._src_limit is not None and self._src_limit > 0:
+		if self._src_limit is not None:
 			kwargs["limit"] = self._src_limit
 		src = self._sources[self._src_index]
 		self._cursor = src.find(**kwargs)
@@ -155,7 +155,7 @@ class FilesInPort(Port):
 					raise
 
 				src = self._sources[self._src_index]
-				src_size = src.size()
+				src_size = src.count()
 				self._src_skip = 0
 				self._src_limit = min(src_size, self._size)
 
@@ -173,7 +173,7 @@ class FilesInPort(Port):
 		pass
 
 	def __repr__(self):
-		return "{} {}".format(self._src_index, repr(self._sources))
+		return "source={} skip={} limit={} sources={}".format(self._src_index, self._src_skip, self._src_limit, repr(self._sources))
 
 
 class FilesOutPort(Port):

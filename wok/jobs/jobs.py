@@ -70,6 +70,7 @@ class JobManager(object):
 			os.makedirs(self._work_path)
 
 		db_path = os.path.join(self._work_path, "jobs.db")
+		# TODO if not in recover_mode then delete jobs.db
 		self._db = create_engine("sqlite:///{}".format(db_path))
 
 		self._callbacks = CallbackManager(valid_events=[events.JOB_UPDATE])
@@ -116,14 +117,14 @@ class JobManager(object):
 
 		self._log.info("Starting '{}' job manager ...".format(self._name))
 
-		self._start()
-
 		with self._lock:
 			session = self._create_session()
 			for job in session.query(self.job_class):
 				self._attach(session, job)
 				session.commit()
 			session.close()
+
+		self._start()
 
 		self._log.info("Job manager '{}' started ...".format(self._name))
 
@@ -190,7 +191,7 @@ class JobManager(object):
 
 			if job is None:
 				session.close()
-				return
+				return JobResults()
 
 			self._log.debug("Joining job [{}] {} ...".format(job.id, job.name))
 

@@ -48,7 +48,7 @@ class WokServer(object):
 
 		self._initialized = False
 
-		self.logger = logger.get_logger("wok.server")
+		self.logger = logger.get_logger("wok.server", level="info")
 
 		if app is not None:
 			self.init_app(app)
@@ -99,15 +99,29 @@ class WokServer(object):
 	def _init_conf(self, app):
 		cb = ConfigBuilder()
 
+		self.logger.info("Checking configuration files from WOK_CONF ...")
+
 		wok_conf = app.config["WOK_CONF"]
 		for path in wok_conf:
 			if not os.path.exists(path):
-				self.logger.error("Wok configuration file not found: {}".format(path))
+				self.logger.error("--- {} (not found)".format(path))
 				continue
+			self.logger.info("+++ {}".format(path))
 			cb.add_file(path)
+
+		self.logger.info("Loading configuration ...")
 
 		self.conf_builder = cb
 		self.conf = cb.get_conf()
+
+		# initialize logging according to the configuration
+
+		log = logger.get_logger("")
+		log.removeHandler(log.handlers[0])
+		logging_conf = self.conf.get("wok.logging")
+		logger.initialize(logging_conf)
+
+		self.logger.debug(repr(self.conf))
 
 	def _init_engine(self):
 		"""
@@ -141,11 +155,6 @@ class WokServer(object):
 		self._init_flask(app)
 
 		self._init_conf(app)
-
-		log = logger.get_logger("")
-		log.removeHandler(log.handlers[0])
-		logging_conf = self.conf.get("wok.logging")
-		logger.initialize(logging_conf)
 
 		self._init_engine()
 
@@ -195,6 +204,8 @@ class WokServer(object):
 			raise Exception("The server can not be run without the app")
 
 		try:
+			self.logger.info("Listening on {}:{} ...".format(args.host, args.port))
+
 			app.run(
 				host=args.host,
 				port=args.port,
@@ -286,8 +297,8 @@ class WokServer(object):
 		case.engine_name = engine_case_name
 		session.commit()
 
-		if start:
-			engine_case.start()
+		#TODO if start:
+		#	engine_case.start()
 
 		return case
 

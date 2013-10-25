@@ -23,11 +23,13 @@ import os
 import shutil
 import StringIO
 import logging
+import time
 from Queue import Queue, Empty
 import threading
 from multiprocessing import cpu_count
 from datetime import datetime
 
+from sqlalchemy import func
 from sqlalchemy.orm.exc import NoResultFound
 from blinker import Signal
 
@@ -40,6 +42,7 @@ from wok.core import events
 from wok.core import errors
 from wok.core.utils.sync import Synchronizable, synchronized
 from wok.core.utils.logsdb import LogsDb
+from wok.core.utils.proctitle import set_proc_title, set_thread_title
 from wok.core.flow.loader import FlowLoader
 from wok.core.projects import ProjectManager
 from wok.platform.factory import create_platform
@@ -63,7 +66,9 @@ class WokEngine(Synchronizable):
 
 		self._global_conf = conf
 
-		self._conf = wok_conf = conf["wok"]
+		self._expanded_global_conf = conf.clone().expand_vars()
+
+		self._conf = wok_conf = self._expanded_global_conf["wok"]
 
 		self._log = logger.get_logger("wok.engine")
 
@@ -99,6 +104,8 @@ class WokEngine(Synchronizable):
 		recover = wok_conf.get("recover", False)
 
 		db_path = os.path.join(self._work_path, "engine.db")
+		if not recover and os.path.exists(db_path):
+			os.remove(db_path)
 		self._db = db.create_engine("sqlite:///{}".format(db_path), drop_tables=not recover)
 
 		self._platform = self._create_platform()
@@ -228,9 +235,12 @@ class WokEngine(Synchronizable):
 
 	@synchronized
 	def _run(self):
-		self._running = True
+
+		set_thread_title()
 
 		num_exc = 0
+
+		self._running = True
 
 		# Start the logs threads
 
@@ -251,15 +261,16 @@ class WokEngine(Synchronizable):
 		while self._running:
 			try:
 				#_log.debug("Scheduling new tasks ...")
+				set_thread_title("scheduling")
 
 				session = db.Session()
 
-				updated_components = set()
+				updated_tasks = set()
 
 				# schedule tasks ready to be executed and save new workitems into the db
 				for case in self._cases:
-					components = case.schedule(session)
-					updated_components.update(components)
+					tasks = case.schedule(session)
+					updated_tasks.update(tasks)
 					session.commit()
 
 				# submit workitems ready to be executed
@@ -270,13 +281,15 @@ class WokEngine(Synchronizable):
 					workitem.state = job_state
 					js.task.dirty = True
 					session.commit()
-					updated_components.add(js.task)
+					updated_tasks.add(js.task)
 
 				session.close()
 
 				#_log.debug("Waiting for events ...")
 
-				while len(updated_components) == 0 and not self._notified and self._running:
+				set_thread_title("waiting")
+
+				while len(updated_tasks) == 0 and not self._notified and self._running:
 					self._cvar.wait(1)
 				self._notified = False
 
@@ -285,7 +298,9 @@ class WokEngine(Synchronizable):
 
 				session = db.Session()
 
-				#_log.debug("Stoping jobs for aborting instances ...")
+				#_log.debug("Stopping jobs for aborting instances ...")
+
+				set_thread_title("working")
 
 				# check stopping instances
 				for case in self._cases:
@@ -330,9 +345,11 @@ class WokEngine(Synchronizable):
 						case = self._cases_by_name[workitem.case.name]
 						task = case.component(workitem.task.cname)
 						task.dirty = True
+
 						workitem.state = state
+						workitem.substate = runstates.LOGS_RETRIEVAL
 						session.commit()
-						updated_components.add(task)
+						updated_tasks.add(task)
 
 						# if workitem has finished, queue it for logs retrieval
 						if state in runstates.TERMINAL_STATES:
@@ -340,40 +357,28 @@ class WokEngine(Synchronizable):
 
 						_log.debug("[{}] Work-Item {} changed state to {}".format(case.name, workitem.cname, state))
 
-				#_log.debug("Updating components state ...\n" + "\n".join("\t{}".format(m.cname) for m in sorted(updated_modules)))
 				#_log.debug("Updating components state ...")
 
 				# update affected components state
-				updated_cases = set([c.case for c in updated_components])
+				updated_cases = set([task.case for task in updated_tasks])
 				for case in updated_cases:
 					case.update_states(session)
 					case.update_count_by_state(session)
 					case.clean_components(session)
 
-				for component in updated_components:
-					case = component.case
+				for task in updated_tasks:
+					case = task.case
 					#_log.debug("[{}] Component {} updated state to {} ...".format(
 					#				component.case.name, component.cname, component.state))
 
-					#if self._log.isEnabledFor(logging.INFO):
-					tcount = component.case.task_count_by_state
-					count = component.workitem_count_by_state
-					sb = ["[{}] {} ({})".format(component.case.name, component.cname, component.state.title)]
+					count = task.workitem_count_by_state
+					sb = ["[{}] {} ({})".format(case.name, task.cname, task.state.title)]
 					sep = " "
 					for state in runstates.STATES:
 						if state in count:
 							sb += [sep, "{}={}".format(state.symbol, count[state])]
 							if sep == " ":
 								sep = ", "
-					"""
-					sb += [" ::"]
-					sep = " "
-					for state in runstates.STATES:
-						if state in tcount:
-							sb += [sep, "{}={}".format(state.symbol, tcount[state])]
-							if sep == " ":
-								sep = ", "
-					"""
 
 					self._log.info("".join(sb))
 
@@ -384,6 +389,8 @@ class WokEngine(Synchronizable):
 				_log.exception("Exception in wok-engine run thread (%d)" % num_exc)
 				if num_exc > 3:
 					raise
+
+		set_thread_title("finishing")
 
 		try:
 			# print cases state before leaving the thread
@@ -404,6 +411,8 @@ class WokEngine(Synchronizable):
 	def _logs(self, index):
 		"Log retrieval thread"
 
+		set_thread_title()
+
 		_log = logger.get_logger("wok.engine.logs-{}".format(index))
 		
 		_log.debug("Engine logs thread ready")
@@ -411,6 +420,8 @@ class WokEngine(Synchronizable):
 		num_exc = 0
 
 		while self._running:
+			set_thread_title("waiting")
+
 			# get the next task to retrieve the logs
 			job_info = self.__queue_adaptative_get(self._logs_queue)
 			if job_info is None:
@@ -427,10 +438,9 @@ class WokEngine(Synchronizable):
 				case = self._cases_by_name[workitem.case.name]
 				task = case.component(workitem.task.cname)
 
-				_log.debug("[{}] Reading logs for work-item {} ...".format(case.name, workitem.cname))
+				set_thread_title(workitem.cname)
 
-				workitem.state_msg = "Reading logs"
-				session.commit()
+				_log.debug("[{}] Reading logs for work-item {} ...".format(case.name, workitem.cname))
 
 				output = self._platform.jobs.output(job_id)
 				if output is None:
@@ -460,13 +470,17 @@ class WokEngine(Synchronizable):
 				_log.exception("Exception in wok-engine logs thread ({})".format(num_exc))
 
 			finally:
+				workitem.substate = runstates.JOINING
 				self._join_queue.put(job_info)
+				session.commit()
 				session.close()
 
 		_log.debug("Engine logs thread finished")
 
 	def _join(self):
 		"Joiner thread"
+
+		set_thread_title()
 
 		_log = logger.get_logger("wok.engine.join")
 
@@ -476,6 +490,8 @@ class WokEngine(Synchronizable):
 
 		while self._running:
 			try:
+				set_thread_title("waiting")
+
 				job_info = self.__queue_adaptative_get(self._join_queue)
 				if job_info is None:
 					continue
@@ -489,12 +505,12 @@ class WokEngine(Synchronizable):
 				case = self._cases_by_name[workitem.case.name]
 				task = case.component(workitem.task.cname)
 
+				set_thread_title(task.cname)
+
 				#_log.debug("Joining work-item %s ..." % task.cname)
 
 				with self._lock:
 					jr = self._platform.jobs.join(job_id) # TODO per case platform
-
-					r = self._platform.data.load_workitem_result(case.name, task.cname, workitem.index)
 
 					wr = Data.element(dict(
 							hostname=jr.hostname,
@@ -503,19 +519,27 @@ class WokEngine(Synchronizable):
 							finished=jr.finished.strftime(_DT_FORMAT) if jr.finished is not None else None,
 							exitcode=jr.exitcode.code if jr.exitcode is not None else None))
 
+					r = self._platform.data.load_workitem_result(case.name, task.cname, workitem.index)
+
 					if r is not None:
 						if r.exception is not None:
 							wr["exception"] = r.exception
 						if r.trace is not None:
 							wr["trace"] = r.trace
 
+					workitem.substate = None
 					workitem.result = wr
-					workitem.state_msg = ""
+
+					case.num_active_workitems -= 1
+
 					session.commit()
 
+					if case.state in runstates.TERMINAL_STATES and case.num_active_workitems == 0:
+						_log.info("Case {} {}. Total time: {}".format(case.name, case.state.title, str(case.elapsed)))
+
 					# check if there are still more work-items
-					num_workitems = session.query(db.WorkItem).filter(
-						~db.WorkItem.state.in_(runstates.TERMINAL_STATES)).count()
+					num_workitems = session.query(func.count(db.WorkItem.id)).filter(
+						~db.WorkItem.state.in_(runstates.TERMINAL_STATES)).scalar()
 
 					if self._single_run and num_workitems == 0:
 						stop_engine = True
@@ -528,7 +552,6 @@ class WokEngine(Synchronizable):
 					_log.debug("[{}] Joined work-item {}".format(case.name, workitem.cname))
 
 					# check stopping instances
-					case = self._cases_by_name[workitem.case.name]
 					if case in self._stopping_cases:
 						job_ids = self._stopping_cases[case]
 						if job_id in job_ids:
@@ -582,12 +605,26 @@ class WokEngine(Synchronizable):
 		self._run_thread = threading.Thread(target=self._run, name="wok-engine-run")
 		self._run_thread.start()
 
-		self._log.info("Engine started")
+		self._lock.release()
+
+		try:
+			# FIXME self._running is not enough to detect that all threads are running
+			while not self._running:
+				time.sleep(1)
+
+			self._log.info("Engine started")
+		except KeyboardInterrupt:
+			wait = False
+			self._log.warn("Ctrl-C pressed ...")
+		except Exception as e:
+			wait = False
+			self._log.error("Exception while waiting for the engine to start")
+			self._log.exception(e)
 
 		if wait:
-			self._lock.release()
 			self.wait()
-			self._lock.acquire()
+
+		self._lock.acquire()
 
 	def wait(self):
 		self._log.info("Waiting for the engine to finish ...")
@@ -698,9 +735,10 @@ class WokEngine(Synchronizable):
 			self._cases += [case]
 			self._cases_by_name[case_name] = case
 
-			self._cvar.notify()
-
 			case.persist(session)
+
+			session.flush()
+			self.notify(lock=False)
 		except:
 			session.rollback()
 			self._log.error("Error while creating case {} for the workflow {} with configuration {}".format(

@@ -48,14 +48,15 @@ class UndefinedState(Exception):
 		else:
 			Exception.__init__(self, "Undefined state")
 
+# Primary states
 
-READY = RunState(1, "ready", "RDY")
+READY = RunState(1, "ready", "RD")
 WAITING = RunState(2, "waiting", "W")
 RUNNING = RunState(3, "running", "R")
 PAUSED = RunState(4, "paused", "P")
-ABORTING = RunState(5, "aborting", "ABG")
+ABORTING = RunState(5, "aborting", "AG")
 FINISHED = RunState(6, "finished", "F")
-RETRY = RunState(7, "retry", "RTR")
+RETRY = RunState(7, "retry", "RT")
 FAILED = RunState(8, "failed", "E")
 ABORTED = RunState(9, "aborted", "A")
 
@@ -63,11 +64,21 @@ STATES = [READY, WAITING, RUNNING, PAUSED, ABORTING, FINISHED, RETRY, FAILED, AB
 
 TERMINAL_STATES = [FINISHED, FAILED, ABORTED]
 
+# Sub states
+
+JOB_CREATED = RunState(10, "job_created", "JC")
+LOGS_RETRIEVAL = RunState(11, "logs_retrieval", "LR")
+JOINING = RunState(12, "joining", "J")
+
+SUBSTATES = [JOB_CREATED, LOGS_RETRIEVAL, JOINING]
+
+# -----------------------------------
+
 __ID_MAP = {}
 __SYMBOL_MAP = {}
 __TITLE_MAP = {}
 
-for s in STATES:
+for s in STATES + SUBSTATES:
 	__ID_MAP[s.id] = s
 	__SYMBOL_MAP[s.symbol] = s
 	__TITLE_MAP[s.title] = s

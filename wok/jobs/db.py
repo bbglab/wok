@@ -17,7 +17,7 @@ Base = declarative_base()
 Session = scoped_session(sessionmaker())
 
 def create_engine(uri):
-	engine = sqlalchemy.create_engine(uri, connect_args=dict(timeout=6, check_same_thread=False))
+	engine = sqlalchemy.create_engine(uri, connect_args=dict(timeout=1800, check_same_thread=False))
 	Session.configure(bind=engine)
 	Base.metadata.create_all(engine)
 	return engine
@@ -90,7 +90,12 @@ from collections import namedtuple
 __JobResults = namedtuple("JobResults", "state, created, started, finished, exitcode, hostname")
 
 class JobResults(__JobResults):
-	def __new__(cls, job):
-		return super(JobResults, cls).__new__(cls,
+	def __new__(cls, job=None):
+		if job is not None:
+			return super(JobResults, cls).__new__(cls,
 						job.state, job.created, job.started, job.finished,
 						job.exitcode, job.hostname)
+		else:
+			return super(JobResults, cls).__new__(cls,
+												  state=None, created=None, started=None, finished=None,
+												  exitcode=None, hostname=None)

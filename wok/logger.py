@@ -24,13 +24,13 @@ import logging.handlers
 
 from wok.config.data import Data
 
-_DEFAULT_FORMAT = "%(asctime)s %(name)-20s [%(levelname)-5s] %(message)s"
+_DEFAULT_FORMAT = "%(asctime)s %(name)-20s [%(levelname)-7s] %(message)s"
 #_DEFAULT_FORMAT = "%(asctime)s %(module)s %(funcName)s %(name)s %(levelname) -5s : %(message)s"
 
 _DEFAULT_DATEFMT = "%Y-%m-%d %H:%M:%S"
 #_DEFAULT_DATEFMT = "%Y-%m-%d %H:%M:%S"
 
-_log_level_map = {
+_LOG_LEVEL = {
 	"debug" : logging.DEBUG,
 	"info" : logging.INFO,
 	"warn" : logging.WARN,
@@ -84,7 +84,7 @@ def initialize(conf=None, format=None, datefmt=None, level=None):
 	_initialized = True
 
 def get_level(level):
-	return _log_level_map.get(level.lower(), "notset")
+	return _LOG_LEVEL.get(level.lower(), "notset")
 
 def get_logger(name="", level=None, conf=None):
 	"""
@@ -158,11 +158,21 @@ def get_handler(logger, conf):
 		return
 
 	type = conf.get("type")
-	if type is None or not isinstance(type, basestring) or type.lower() != "smtp":
+	if type is None or not isinstance(type, basestring) or type.lower() not in _HANDLERS.keys():
 		logger.error("Unknown or unsupported handler type: {0}\n{1}".format(type, repr(conf)))
 		return
 
-	handler = get_smtp_handler(conf)
+	handler = _HANDLERS[type](conf)
+
+	level = conf.get("level")
+	if level is not None:
+		handler.setLevel(get_level(level))
+
+	format = conf.get("format", _DEFAULT_FORMAT)
+	if format is not None:
+		if Data.is_list(format):
+			format = "".join(format.to_native())
+		handler.setFormatter(logging.Formatter(format))
 
 	return handler
 
@@ -187,16 +197,35 @@ def get_smtp_handler(conf):
 	toaddr = conf.get("to")
 	subject = conf.get("subject")
 
-	handler = logging.handlers.SMTPHandler(mailhost, fromaddr, toaddr, subject, credentials, tuple())
+	return logging.handlers.SMTPHandler(mailhost, fromaddr, toaddr, subject, credentials, tuple())
 
-	level = conf.get("level")
-	if level is not None:
-		handler.setLevel(get_level(level))
+def get_file_handler(conf):
+	_log = logging.getLogger(__name__)
+	mf = conf.missing_fields(["filename"])
+	if len(mf) != 0:
+		_log.error("The following fields for the handler are missing: {0}\n{1}".format(", ".join(mf), repr(conf)))
+		return
 
-	format = conf.get("format")
-	if format is not None:
-		if Data.is_list(format):
-			format = "".join(format.to_native())
-		handler.setFormatter(logging.Formatter(format))
+	filename = conf["filename"]
+	mode = conf.get("mode", "a")
 
-	return handler
+	return logging.FileHandler(filename, mode)
+
+def get_timed_rotating_file_handler(conf):
+	_log = logging.getLogger(__name__)
+	mf = conf.missing_fields(["filename", "when", "interval"])
+	if len(mf) != 0:
+		_log.error("The following fields for the handler are missing: {0}\n{1}".format(", ".join(mf), repr(conf)))
+		return
+
+	filename = conf["filename"]
+	when = conf["when"]
+	interval = conf["interval"]
+
+	return logging.handlers.TimedRotatingFileHandler(filename, when, interval)
+
+_HANDLERS = {
+	"smtp" : get_smtp_handler,
+	"file" : get_file_handler,
+	"timed_rotating_file" : get_timed_rotating_file_handler
+}

@@ -32,8 +32,9 @@ from sqlalchemy import Column, Integer, String, Float
 
 from wok.config import JOBS_CONF
 from wok.config.data import Data
-from wok.core.errors import ConfigTypeError
 from wok.core import runstates
+from wok.core.errors import ConfigTypeError
+from wok.core.utils.proctitle import set_thread_title
 
 from wok.jobs import Job, JobManager
 
@@ -192,6 +193,8 @@ class SagaJobManager(JobManager):
 
 	def _run_handler(self):
 
+		set_thread_title()
+
 		session = self._create_session()
 
 		with self._lock:
@@ -278,6 +281,8 @@ class SagaJobManager(JobManager):
 		self._log.debug("Run thread finished")
 
 	def _join_handler(self):
+
+		set_thread_title()
 
 		session = self._create_session()
 

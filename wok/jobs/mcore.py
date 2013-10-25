@@ -1,15 +1,17 @@
 import os
 import time
 import tempfile
+import signal
 import subprocess
 import multiprocessing as mp
-from threading import Thread, Lock, Condition
+from threading import Thread, Lock, Condition, current_thread
 from datetime import datetime
 
 from sqlalchemy import Column, Boolean, String
 
 from wok.core import exit_codes, runstates
 from wok.core.utils.timeout import ProgressiveTimeout
+from wok.core.utils.proctitle import set_thread_title
 
 from wok.jobs.jobs import Job, JobManager
 
@@ -31,7 +33,7 @@ class McoreJobManager(JobManager):
 	def __init__(self, conf):
 		JobManager.__init__(self, "mcore", conf)
 
-		self._num_cores = self._conf.get("num_cores", mp.cpu_count(), dtype=int)
+		self._num_cores = self._conf.get("max_cores", mp.cpu_count(), dtype=int)
 
 		self._running = False
 		self._kill_threads = False
@@ -68,7 +70,7 @@ class McoreJobManager(JobManager):
 				self._log.exception(e)
 				job = None
 			if job is None and self._running:
-				timeout.sleep() #TODO Use a Condition --> self._run_cvar or better an Event
+				timeout.sleep() #TODO Guess how to use a Condition (self._run_cvar) or an Event
 
 		return job
 
@@ -84,9 +86,13 @@ class McoreJobManager(JobManager):
 		session = self._create_session()
 		try:
 			while self._running:
+				set_thread_title()
+
 				job = self._next_job(session)
 				if job is None:
 					break
+
+				set_thread_title("{}".format(job.name))
 
 				self._log.debug("Running task [{}] {} ...".format(job.id, job.name))
 
@@ -112,8 +118,8 @@ class McoreJobManager(JobManager):
 
 				# Prepare the script file
 
-				script_path = tempfile.mkstemp(prefix=job.name, suffix=".sh")[1]
-				with open(script_path, "w") as f:
+				fd, script_path = tempfile.mkstemp(prefix=job.name + "-", suffix=".sh")
+				with os.fdopen(fd, "w") as f:
 					f.write(script)
 
 				# Run the script
@@ -126,7 +132,10 @@ class McoreJobManager(JobManager):
 										stdout=o,
 										stderr=subprocess.STDOUT,
 										cwd=cwd,
-										env=env)
+										env=env,
+										preexec_fn=os.setsid)
+
+					set_thread_title("{} PID={}".format(job.name, process.pid))
 
 					session.refresh(job, ["state"])
 					timeout = ProgressiveTimeout(0.5, 6.0, 0.5)
@@ -136,9 +145,9 @@ class McoreJobManager(JobManager):
 
 					job.finished = datetime.now()
 
-					if process.poll() is None: # and (self._kill_threads or job.state != runstates.RUNNING):
+					if process.poll() is None:
 						self._log.info("Killing job [{}] {} ...".format(job.id, job.name))
-						process.terminate()
+						os.killpg(process.pid, signal.SIGTERM)
 						timeout = ProgressiveTimeout(0.5, 6.0, 0.5)
 						while process.poll() is None:
 							timeout.sleep()
@@ -159,6 +168,14 @@ class McoreJobManager(JobManager):
 					job.finished = datetime.now()
 					job.exitcode = exit_codes.RUN_THREAD_EXCEPTION
 				finally:
+					try:
+						if process.poll() is None:
+							self._log.info("Killing job [{}] {} ...".format(job.id, job.name))
+							os.killpg(process.pid, signal.SIGKILL)
+						process.wait()
+					except:
+						self._log.exception("Exception while waiting for process {} to finish".format(process.pid))
+
 					o.close()
 					if os.path.exists(script_path):
 						os.remove(script_path)
@@ -172,6 +189,8 @@ class McoreJobManager(JobManager):
 
 				self._update_job(session, job)
 
+		except:
+			self._log.exception("Unexpected exception in thread {}".format(current_thread().name))
 		finally:
 			session.close()
 
@@ -213,9 +232,9 @@ class McoreJobManager(JobManager):
 			session.expire(job, [McoreJob.state])
 
 	def _close(self):
+		self._running = False
+		self._kill_threads = False
 		with self._run_lock:
-			self._running = False
-			self._kill_threads = False
 			self._run_cvar.notify(self._num_cores)
 
 		for thread in self._threads:
@@ -224,5 +243,4 @@ class McoreJobManager(JobManager):
 				thread.join(1)
 				timeout -= 1
 				if timeout == 0:
-					timeout = 30
 					self._kill_threads = True

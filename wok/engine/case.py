@@ -121,6 +121,8 @@ class Case(object):
 		for node in self.root_node.children:
 			self._calculate_priorities(node)
 
+		self.num_active_workitems = 0
+
 		#self._log.debug("Flow node tree:\n" + repr(self.root_node))
 
 	def persist(self, session):
@@ -699,12 +701,14 @@ class Case(object):
 						cname=workitem.cname,
 						index=workitem.index,
 						state=workitem.state,
-						state_msg=workitem.state_msg,
+						substate=workitem.substate,
 						priority=workitem.priority))
 
 					session.commit()
 
 					count += 1
+
+				self.num_active_workitems += count
 
 				if count == 0:
 					self.change_component_state(component, runstates.FINISHED)
@@ -842,10 +846,6 @@ class Case(object):
 			if component.started is None:
 				component.started = component.finished
 
-			if component == self.root_node:
-				elapsed = component.finished - component.started
-				self._log.info("Case {} {}. Total time: {}".format(self.name, state.title, str(elapsed)))
-
 	def update_states(self, session, component=None):
 		if component is None:
 			component = self.root_node
@@ -862,6 +862,9 @@ class Case(object):
 		if self.update_component_state(component, children_states):
 			session.query(db.Component).filter(db.Component.id == component.id)\
 					.update({db.Component.state : component.state})
+			if component == self.root_node:
+				self.state = component.state # update case state from the root node
+				session.query(db.Case).filter(db.Case.id == self.id).update({db.Case.state : self.state})
 			session.commit()
 
 	def update_component_state(self, component, children_states):
@@ -894,11 +897,6 @@ class Case(object):
 
 		if state is not None and state != prev_state:
 			self.change_component_state(component, state)
-
-			# update case state from the root node
-			if component.parent is None: #and component.state in runstates.TERMINAL_STATES + [runstates.WAITING]:
-				self.state = component.state
-
 			return True
 
 		return False
