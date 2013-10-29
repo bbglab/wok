@@ -21,9 +21,9 @@ class FilesProvider(DataProvider):
 		indent=True
 	)
 
-	name = "files"
+	plugin_type = "files"
 
-	required_conf = ["path"]
+	plugin_required_conf = ["path"]
 
 	def __init__(self, conf):
 		super(FilesProvider, self).__init__(conf)

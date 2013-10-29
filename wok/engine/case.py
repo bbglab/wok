@@ -38,8 +38,9 @@ from wok.core.utils.sync import Synchronizable
 from wok.core.utils.proxies import ReadOnlyProxy
 from wok.data import DataProvider
 from wok.data.portref import PortDataRef, MergedPortDataRef
-from wok.engine.nodes import *
 
+from nodes import *
+import rtconf
 import db
 
 # 2011-10-06 18:39:46,849 bfast_localalign-0000 INFO  : hello world
@@ -49,64 +50,32 @@ class Case(object):
 
 	_INDENT = "  "
 
-	def __init__(self, name, conf_builder, flow_uri, engine, platform):
+	def __init__(self, name, conf_builder, project, flow, engine):
 		self.name = name
-		self.title = name
-
-		self.created = datetime.now()
-		
-		self.conf = None
 		self.conf_builder = conf_builder
-
-		self.flow_uri = flow_uri
-		self.root_flow = None
-
+		self.project = project
+		self.root_flow = flow
 		self.engine = engine
-		self.platform = platform
-		self.project = None
 
-		self._state = runstates.READY
-
-		self.root_node = None
-		
-		# components by name
-		self._component_by_cname = None
-
-		# tasks in dependency order
-		self._tasks = []
-
-		# Whether this case is marked for removal when all the jobs finish
-		self.removed = False
+		self.title = flow.title
+		self.created = datetime.now()
+		self.flow_uri = "{}:{}".format(project.name, flow.name) # FIXME flow.uri
 
 		self._log = logger.get_logger("wok.case")
-	
-	def initialize(self):
-		self.conf = self.conf_builder.get_conf()
 
-		case_conf = self.conf.get("wok.case", default=Data.element)
-
-		case_conf["name"] = self.name
-		self.title = case_conf.get("title", self.name)
-
-		self.root_flow = self.engine.projects.load_flow(self.flow_uri)
-
-		self.project = self.root_flow.project
-
-		# self._log.debug("\n" + repr(self.root_flow))
-
-		case_conf.element("flow", dict(
-			name=self.root_flow.name,
-			uri=self.flow_uri))
-			#path=os.path.dirname(os.path.abspath(self.flow_uri)),
-			#file=os.path.basename(self.flow_uri)))
-
-		self._component_rules = case_conf.get("component_rules", default=Data.element)
+		self.conf = self._initialize_conf(conf_builder)
 
 		# reset state
 		self._state = runstates.PAUSED
 
+		# components by name
+		self._component_by_cname = None
+
 		# create nodes tree
 		self.root_node = self._create_tree(self.root_flow)
+
+		# calculate components configuration
+		self._apply_component_conf()
 
 		# connect ports and create dependencies
 		self._connect_ports_and_create_deps()
@@ -114,22 +83,47 @@ class Case(object):
 		# calculate the list of tasks in dependency order
 		self.tasks = self._tasks_in_dependency_order()
 
+		# list of used platforms
+		self.platforms = self._used_platforms()
+
 		# calculate priorities
 		for node in self.root_node.children:
 			self._calculate_priorities(node)
 
+		# Track the number of active workitems
 		self.num_active_workitems = 0
 
+		# Whether this case is marked for removal when all the jobs finish
+		self.removed = False
+
 		#self._log.debug("Flow node tree:\n" + repr(self.root_node))
+	
+	def _initialize_conf(self, conf_builder):
+		# project defined config
+		conf = self.project.conf.clone()
+
+		# user defined config
+		user_conf = self.conf_builder.get_conf()
+		user_conf.delete("wok.work_path", "wok.projects", "wok.platforms", "wok.logging")
+		conf.merge(user_conf)
+
+		# runtime config
+		conf[rtconf.CASE_NAME] = self.name
+		conf[rtconf.FLOW] = Data.element(dict(
+			name=self.root_flow.name,
+			uri=self.flow_uri))
+			#path=os.path.dirname(os.path.abspath(self.flow_uri)),
+			#file=os.path.basename(self.flow_uri)))
+
+		return conf
 
 	def persist(self, session):
 		case = db.Case(
 			name=self.name,
 			title=self.title,
 			created=self.created,
-			flow_uri=self.flow_uri,
 			project=self.project.name,
-			platform=self.platform.name,
+			flow=self.root_flow.name,
 			conf=self.conf,
 			state=self._state)
 
@@ -162,22 +156,22 @@ class Case(object):
 
 	def __persist_component(self, cls, case, parent, node, **kwargs):
 		c = cls(
-			case=case,
-			parent=parent,
-			ns=node.namespace,
-			name=node.name,
-			cname=node.cname,
-			title=node.model.title,
-			desc=node.model.desc,
-			enabled=node.model.enabled,
-			maxpar=node.model.maxpar,
-			wsize=node.model.wsize,
-			priority=node.priority,
-			priority_factor=node.priority_factor,
-			resources=node.resources,
-			state=node.state,
-			conf=node.conf,
-			**kwargs)
+				case=case,
+				parent=parent,
+				ns=node.namespace,
+				name=node.name,
+				cname=node.cname,
+				title=node.model.title,
+				desc=node.model.desc,
+				enabled=node.model.enabled,
+				maxpar=node.model.maxpar,
+				wsize=node.model.wsize,
+				priority=node.priority,
+				priority_factor=node.priority_factor,
+				resources=node.resources,
+				state=node.state,
+				conf=node.conf,
+				**kwargs)
 
 		#TODO params
 		#c.params = []
@@ -193,10 +187,6 @@ class Case(object):
 		session.query(db.Block).filter(db.Block.id.in_(cmps)).delete(synchronize_session='fetch')
 		session.query(db.Case).filter(db.Case.id == self.id).delete()
 		session.query(db.WorkItem).filter(db.WorkItem.case_id == self.id).delete()
-
-	@property
-	def project(self):
-		return self.project
 
 	@property
 	def state(self):
@@ -596,6 +586,19 @@ class Case(object):
 				q.extend(comp.children)
 		return tasks
 
+	def _used_platforms(self):
+		default_platform_target = self.engine.default_platform.name
+		platforms = []
+		names = set()
+		for task in self.tasks:
+			platform_target = task.conf.get(rtconf.PLATFORM_TARGET, default_platform_target)
+			platform = self.engine.platform(platform_target)
+			if platform is None:
+				raise Exception("Task '{}' references a platform that does not exists: {}".format(task.cname, platform_target))
+			if platform.name not in names:
+				platforms += [platform]
+				names.add(platform.name)
+		return platforms
 
 	def _calculate_priorities(self, component, parent_priority=0, factor=1.0):
 		if component.model.priority is not None:
@@ -612,39 +615,57 @@ class Case(object):
 			for child in component.children:
 				self._calculate_priorities(child, component.priority, factor)
 
-	def apply_task_rules(self, component, conf):
-		#self._log.debug("Component %s" % (component.cname))
-		
-		for rule in self._component_rules:
-			names = rule["name"]
-			names_are_strings = [isinstance(a, basestring) for a in names]
-			if isinstance(names, basestring):
-				names = [names]
-			elif not Data.is_list(names) \
-					or not reduce(lambda x,y: x and y, names_are_strings):
-				self._log.error("[{}] wok.case.mod_rules[*].name must be a string or a list of strings".format(
-									component.cname))
-				continue
-			m = None
-			for name in names:
-				m = re.match(name, component.cname)
-				if m is not None:
-					break
-			if m is not None:
-				#self._log.debug(">>> %s" % (str(names)))
-				if "maxpar" in rule:
-					component.maxpar = rule.get("maxpar", dtype=int)
-				if "wsize" in rule:
-					component.wsize = rule.get("wsize", dtype=int)
-				if "conf" in rule:
-					for entry in rule["conf"]:
-						component.conf[entry[0]] = entry[1]
+	def _materialize_component_conf(self, component, default_platform_target):
+		conf = component.conf
+
+		component.enabled = conf.get(rtconf.TASK_ENABLED, component.enabled)
+		component.maxpar = conf.get(rtconf.TASK_MAXPAR, component.maxpar)
+		component.wsize = conf.get(rtconf.TASK_WSIZE, component.wsize)
+
+		platform_target = conf.get(rtconf.PLATFORM_TARGET, default_platform_target)
+		if platform_target is not None:
+			component.platform = self.engine.platform(platform_target)
+		else:
+			component.platform = self.engine.default_platform
+
+	def _apply_component_conf(self, component=None):
+		if component is None:
+			component = self.root_node
+
+		# apply case configuration (this includes project and user conf)
+		conf = self.conf.clone()
+
+		# apply configuration defined in the workflow model
+		if component.model.conf is not None:
+			conf.merge(component.model.conf)
+
+		# apply configuration rules defined in the project
+
+		default_platform_target = self.engine.default_platform.name
+		for rule in self.project.conf_rules:
+			platform_target = conf.get(rtconf.PLATFORM_TARGET, default_platform_target)
+			if rule.match(task=component.cname, platform=platform_target):
+				rule.apply(conf)
+
+		if rtconf.PROJECT_PATH not in conf:
+			conf[rtconf.PROJECT_PATH] = self.project.path
+
+		#print component.cname, ">>>", conf
+
+		component.conf = conf.expand_vars()
+
+		self._materialize_component_conf(component, default_platform_target)
+
+		if not component.is_leaf:
+			for child in component.children:
+				self._apply_component_conf(child)
 
 	def _create_task_data(self, task):
 		"""
 		Prepare the data provider for a new scheduled task.
 		"""
-		provider = self.platform.data
+
+		provider = task.platform.data
 		for port in task.out_ports:
 			provider.remove_port_data(port)
 		provider.save_task(task)
@@ -688,7 +709,7 @@ class Case(object):
 				# Partition data stream
 				count = 0
 				for workitem in self._partition_task(component):
-					self.platform.data.save_workitem(workitem)
+					component.platform.data.save_workitem(workitem)
 
 					session.add(db.WorkItem(
 						case_id=self.id,
@@ -699,7 +720,8 @@ class Case(object):
 						index=workitem.index,
 						state=workitem.state,
 						substate=workitem.substate,
-						priority=workitem.priority))
+						priority=workitem.priority,
+						platform=component.platform.name))
 
 					session.commit()
 
@@ -738,7 +760,7 @@ class Case(object):
 		for port in task.in_ports:
 			psize = 0
 			for data_ref in port.data.refs:
-				port_data = self.platform.data.open_port_data(self.name, data_ref)
+				port_data = task.platform.data.open_port_data(self.name, data_ref)
 				data_ref.size = port_data.size()
 				psize += data_ref.size
 			port.data.size = psize
@@ -1086,8 +1108,8 @@ class Case(object):
 		return q
 
 	@property
-	def storage(self):
-		return self.platform.storage.get_container(self.name)
+	def storages(self):
+		return [platform.storage.get_container(self.name) for platform in self.platforms]
 
 	#TODO
 	"""
@@ -1150,10 +1172,10 @@ class SynchronizedCase(Synchronizable):
 		self.__case = case;
 
 	def __getattr__(self, name):
-		if name in ["name", "title", "state", "created", "started", "finished", "elapsed", "storage"]:
+		if name in ["name", "title", "state", "created", "started", "finished", "elapsed", "storages"]:
 			return getattr(self.__case, name)
 		else:
-			return AttributeError(name)
+			raise AttributeError(name)
 
 	@property
 	@synchronized

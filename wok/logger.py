@@ -38,6 +38,12 @@ _LOG_LEVEL = {
 	"critical" : logging.CRITICAL,
 	"notset" : logging.NOTSET }
 
+_HANDLERS = {
+	"smtp" : get_smtp_handler,
+	"file" : get_file_handler,
+	"timed_rotating_file" : get_timed_rotating_file_handler
+}
+
 _initialized = False
 
 def initialize(conf=None, format=None, datefmt=None, level=None):
@@ -224,8 +230,3 @@ def get_timed_rotating_file_handler(conf):
 
 	return logging.handlers.TimedRotatingFileHandler(filename, when, interval)
 
-_HANDLERS = {
-	"smtp" : get_smtp_handler,
-	"file" : get_file_handler,
-	"timed_rotating_file" : get_timed_rotating_file_handler
-}

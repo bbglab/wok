@@ -17,7 +17,7 @@ class MongoProvider(DataProvider):
 	    **log**: logging configuration
 	"""
 
-	name = "mongo"
+	plugin_type = "mongo"
 
 	def __init__(self, conf):
 		super(MongoProvider, self).__init__(conf)

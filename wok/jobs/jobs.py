@@ -7,7 +7,7 @@ from wok.core import runstates
 from wok.core import events
 from wok.core.errors import MissingConfigParamError
 from wok.core.callback import CallbackManager
-from wok.jobs.db import create_engine, Session, Job, JobResults
+from wok.jobs.db import create_engine, create_session_factory, Job, JobResults
 
 import inspect
 # Class to wrap Lock and simplify logging of lock usage
@@ -72,6 +72,7 @@ class JobManager(object):
 		db_path = os.path.join(self._work_path, "jobs.db")
 		# TODO if not in recover_mode then delete jobs.db
 		self._db = create_engine("sqlite:///{}".format(db_path))
+		self._session_factory = create_session_factory(self._db)
 
 		self._callbacks = CallbackManager(valid_events=[events.JOB_UPDATE])
 
@@ -80,7 +81,7 @@ class JobManager(object):
 		#self._lock = LogLock("lock", self._log)
 
 	def _create_session(self):
-		return Session()
+		return self._session_factory()
 
 	@property
 	def callbacks(self):
@@ -246,6 +247,6 @@ class JobManager(object):
 
 		session.close()
 
-		Session.remove()
+		self._session_factory.remove()
 
 		self._log.info("Job manager '{}' closed".format(self._name))

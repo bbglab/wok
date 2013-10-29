@@ -9,14 +9,14 @@ class Plugin(object):
 
 	# static variables:
 	#
-	# name: The name of the plugin used by the factory
-	# required_conf: The list of required configuration parameters
+	# plugin_type: The name of the plugin used by the factory
+	# plugin_required_conf: The list of required configuration parameters
 
 	def __init__(self, conf, logger_name=None):
 		self._conf = conf
-		if hasattr(self, "required_conf"):
+		if hasattr(self, "plugin_required_conf"):
 			missing_conf = []
-			for arg in self.required_conf:
+			for arg in self.plugin_required_conf:
 				if arg not in conf:
 					missing_conf += [arg]
 			if len(missing_conf) > 0:
@@ -32,7 +32,7 @@ class Plugin(object):
 			del conf[ctx_name]
 			conf.merge(ctx_conf)
 		if "type" not in conf:
-			conf["type"] = self.name
+			conf["type"] = self.plugin_type
 		return conf
 
 class PluginFactory(object):
@@ -43,9 +43,9 @@ class PluginFactory(object):
 		self.__default = default
 		self.__class_map = {}
 		for plugin_class in class_list:
-			if not hasattr(plugin_class, "name"):
-				raise PluginError("Plugin '{}' without name".format(plugin_class.__name__))
-			self.__class_map[plugin_class.name] = plugin_class
+			if not hasattr(plugin_class, "plugin_type"):
+				raise PluginError("Plugin '{}' missing 'plugin_type' attribute".format(plugin_class.__name__))
+			self.__class_map[plugin_class.plugin_type] = plugin_class
 
 	def create(self, conf=None, type=None, logger=None):
 		type = type or conf.get("type") or self.__default

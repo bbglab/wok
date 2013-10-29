@@ -14,13 +14,18 @@ from sqlalchemy.ext.declarative import declarative_base
 
 Base = declarative_base()
 
-Session = scoped_session(sessionmaker())
+#Session = scoped_session(sessionmaker())
 
 def create_engine(uri):
 	engine = sqlalchemy.create_engine(uri, connect_args=dict(timeout=1800, check_same_thread=False))
-	Session.configure(bind=engine)
+	#Session.configure(bind=engine)
 	Base.metadata.create_all(engine)
 	return engine
+
+def create_session_factory(engine):
+	session_factory = scoped_session(sessionmaker())
+	session_factory.configure(bind=engine)
+	return session_factory
 
 # Model ------------------------------------------------------
 

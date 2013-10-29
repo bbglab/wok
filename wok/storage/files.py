@@ -20,9 +20,9 @@ def _ensure_path_exists(path):
 
 class FilesStorage(Storage):
 
-	name = "files"
+	plugin_type = "files"
 
-	required_conf = ["path"]
+	plugin_required_conf = ["path"]
 
 	def __init__(self, conf):
 		super(FilesStorage, self).__init__(conf)

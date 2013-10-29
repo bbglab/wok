@@ -27,6 +27,7 @@ from wok.config.data import Data
 from cmd import CommmandBuilder
 from constants import FLOW_PATH, SCRIPT_PATH, MODULE_SCRIPT_PATH, CTX_EXEC
 from wok.core.errors import MissingValueError, LanguageError
+from wok.engine import rtconf
 
 
 class NativeCommmandBuilder(CommmandBuilder):
@@ -56,16 +57,11 @@ class NativeCommmandBuilder(CommmandBuilder):
 
 		case_conf = case.conf.clone().expand_vars()
 
-		cmd_conf = case_conf.get(COMMAND_CONF, default=Data.element)
-		#native_conf = cmd_conf.get("default", default=Data.element)
-		#native_conf.merge(cmd_conf.get("native", default=Data.element))
-
 		# Environment variables
 		env = Data.element()
 		#for k, v in os.environ.items():
 		#	env[k] = v
-		env.merge(cmd_conf.get("default.env"))
-		env.merge(cmd_conf.get("{}.env".format(lang)))
+		env.merge(task.conf.get(rtconf.TASK_ENV))
 		env.merge(exec_conf.get("env"))
 
 		# Default module script path
@@ -76,34 +72,27 @@ class NativeCommmandBuilder(CommmandBuilder):
 
 		script = []
 		
-		default_sources = cmd_conf.get("default.source", default=Data.list)
-		if isinstance(default_sources, basestring):
-			default_sources = Data.list([default_sources])
-
-		sources = cmd_conf.get("{}.source".format(lang), default=Data.list)
+		sources = task.conf.get(rtconf.TASK_SOURCES, default=Data.list)
 		if isinstance(sources, basestring):
 			sources = Data.list([sources])
 
-		for source in default_sources + sources:
+		for source in sources:
 			script += ["source {}".format(source)]
 	
 		if lang == "python":
-			virtualenvs = cmd_conf.get("{}.virtualenv".format(lang), default=Data.list)
-			if isinstance(virtualenvs, basestring):
-				virtualenvs = Data.list([virtualenvs])
-
-			#script += ["set -x"]
-			for virtualenv in virtualenvs:
+			virtualenv = task.conf.get(rtconf.TASK_PYTHON_VIRTUALENV)
+			if virtualenv is not None:
+				#script += ["set -x"]
 				#script += ["echo Activating virtualenv {} ...".format(virtualenv)]
 				script += ["source '{}'".format(os.path.join(virtualenv, "bin", "activate"))]
-			#script += ["set +x"]
+				#script += ["set +x"]
 
 			#script += ["echo Running workitem ..."]
 
-			cmd = [cmd_conf.get("python.bin", "python")]
+			cmd = [task.conf.get(rtconf.TASK_PYTHON_BIN, "python")]
 			cmd += [script_path if os.path.isabs(script_path) else "${}".format(MODULE_SCRIPT_PATH)]
 
-			lib_path = cmd_conf.get("python.lib_path")
+			lib_path = task.conf.get(rtconf.TASK_PYTHON_LIBS)
 			if lib_path is not None:
 				if Data.is_list(lib_path):
 					lib_path = ":".join(lib_path)
@@ -122,10 +111,10 @@ class NativeCommmandBuilder(CommmandBuilder):
 		#for key, value in self._storage_conf(workitem.case.engine.storage.basic_conf):
 		#	cmd += ["-D", "storage.{}={}".format(key, value)]
 
-		for key, value in self._plain_conf(Data.create(case.platform.data.context_conf(CTX_EXEC))):
+		for key, value in self._plain_conf(Data.create(task.platform.data.context_conf(CTX_EXEC))):
 			cmd += ["-D", "data.{}={}".format(key, value)]
 
-		for key, value in self._plain_conf(case.platform.storage.context_conf(CTX_EXEC)):
+		for key, value in self._plain_conf(task.platform.storage.context_conf(CTX_EXEC)):
 			cmd += ["-D", "storage.{}={}".format(key, value)]
 
 		script += [" ".join(cmd)]

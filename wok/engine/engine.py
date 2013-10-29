@@ -36,7 +36,7 @@ from blinker import Signal
 from wok import logger
 from wok.config import COMMAND_CONF
 from wok.config.data import Data
-from wok.config.builder import ConfigBuilder
+from wok.config.builder import ConfigBuilder, ConfigFile
 from wok.core import runstates
 from wok.core import events
 from wok.core import errors
@@ -61,22 +61,24 @@ class WokEngine(Synchronizable):
 	Each case represents a workflow loaded with a certain configuration.
 	"""
 
-	def __init__(self, conf):
+	def __init__(self, conf, conf_base_path=None):
 		Synchronizable.__init__(self)
 
 		self._global_conf = conf
 
 		self._expanded_global_conf = conf.clone().expand_vars()
 
-		self._conf = wok_conf = self._expanded_global_conf["wok"]
+		self._conf = self._expanded_global_conf["wok"]
+
+		self._conf_base_path = conf_base_path
 
 		self._log = logger.get_logger("wok.engine")
 
-		self._work_path = wok_conf.get("work_path", os.path.join(os.getcwd(), "wok-files"))
+		self._work_path = self._conf.get("work_path", os.path.join(os.getcwd(), "wok-files"))
 		if not os.path.exists(self._work_path):
 			os.makedirs(self._work_path)
 
-		self._num_log_threads = wok_conf.get("num_log_threads", cpu_count())
+		self._num_log_threads = self._conf.get("num_log_threads", cpu_count())
 
 		self._cases = []
 		self._cases_by_name = {}
@@ -101,16 +103,31 @@ class WokEngine(Synchronizable):
 
 		self._notified = False
 
-		recover = wok_conf.get("recover", False)
+		recover = self._conf.get("recover", False)
 
 		db_path = os.path.join(self._work_path, "engine.db")
 		if not recover and os.path.exists(db_path):
 			os.remove(db_path)
 		self._db = db.create_engine("sqlite:///{}".format(db_path), drop_tables=not recover)
 
-		self._platform = self._create_platform()
+		# platforms
 
-		self._projects = ProjectManager(self._conf.get("projects"))
+		self._platforms = self._create_platforms()
+		self._platforms_by_name = {}
+		for platform in self._platforms:
+			self._platforms_by_name[platform.name] = platform
+		default_platform_name = self._conf.get("default_platform", self._platforms[0].name)
+		if default_platform_name not in self._platforms_by_name:
+			self._log.warn("Platform '{}' not found, using '{}' as the default platform".format(
+				default_platform_name, self._platforms[0].name))
+			default_platform_name = self._platforms[0].name
+		self._default_platform = self._platforms_by_name[default_platform_name]
+
+		# projects
+
+		if conf_base_path is None:
+			conf_base_path = os.getcwd()
+		self._projects = ProjectManager(self._global_conf.get("wok.projects"), base_path=conf_base_path)
 		self._projects.initialize()
 
 		# signals
@@ -124,28 +141,53 @@ class WokEngine(Synchronizable):
 		if recover:
 			self.__recover_from_db()
 
-	def _create_platform(self):
+	def _create_platforms(self):
 		"""
 		Creates the platform according to the configuration
 		:return: Platform
 		"""
 
-		conf = self._conf.get("platform")
-		if conf is None:
-			conf = Data.element()
-		elif not Data.is_element(conf):
-			self._log.error("Wrong configuration type for 'platform': {}".format(conf))
-			conf = Data.element()
+		platform_confs = self._conf.get("platforms")
+		if platform_confs is None:
+			platform_confs = Data.list()
+		elif not Data.is_list(platform_confs):
+			self._log.error("Wrong configuration type for 'platforms': {}".format(platform_confs))
+			platform_confs = Data.list()
 
-		name = conf.get("type", "local")
+		if len(platform_confs) == 0:
+			platform_confs += [Data.element(dict(type="local"))]
 
-		if "work_path" not in conf:
-			conf["work_path"] = os.path.join(self._work_path, "platform_{}".format(name))
+		platforms = []
 
-		self._log.info("Creating '{}' platform ...".format(name))
-		self._log.debug("Platform configuration: {}".format(repr(conf)))
+		names = {}
+		for pidx, platform_conf in enumerate(platform_confs):
+			if isinstance(platform_conf, basestring):
+				if not os.path.isabs(platform_conf) and self._conf_base_path is not None:
+					platform_conf = os.path.join(self._conf_base_path, platform_conf)
+				platform_conf = ConfigFile(platform_conf).load()
 
-		return create_platform(name, conf)
+			if not Data.is_element(platform_conf):
+				raise errors.ConfigTypeError("wok.platforms[{}]".format(pidx, platform_conf))
+
+			ptype = platform_conf.get("type", "local")
+
+			name = platform_conf.get("name", ptype)
+			if name in names:
+				name = "{}-{}".format(name, names[name])
+				names[name] += 1
+			else:
+				names[name] = 2
+			platform_conf["name"] = name
+
+			if "work_path" not in platform_conf:
+				platform_conf["work_path"] = os.path.join(self._work_path, "platform_{}".format(name))
+
+			self._log.info("Creating '{}' platform ...".format(name))
+			self._log.debug("Platform configuration: {}".format(repr(platform_conf)))
+
+			platforms += [create_platform(ptype, platform_conf)]
+
+		return platforms
 
 	def _on_job_update(self, event, **kwargs):
 		self.notify()
@@ -180,9 +222,13 @@ class WokEngine(Synchronizable):
 					timeout += 1
 		return msg_batch
 
-	def __job_submissions(self, session):
+	def __job_submissions(self, session, platform):
 		#FIXME Be fair with priorities between different cases ?
-		query = session.query(db.WorkItem).filter(db.WorkItem.state == runstates.READY).order_by(db.WorkItem.priority)
+		query = session.query(db.WorkItem)\
+			.filter(db.WorkItem.state == runstates.READY)\
+			.filter(db.WorkItem.platform == platform.name)\
+			.order_by(db.WorkItem.priority)
+
 		for workitem in query:
 			case = self._cases_by_name[workitem.case.name]
 			task = case.component(workitem.task.cname)
@@ -278,14 +324,15 @@ class WokEngine(Synchronizable):
 					session.commit()
 
 				# submit workitems ready to be executed
-				job_submissions = self.__job_submissions(session)
-				for js, job_id, job_state in self._platform.submit(job_submissions): # TODO per case platform
-					workitem = session.query(db.WorkItem).filter(db.WorkItem.id == js.workitem_id).one()
-					workitem.job_id = job_id
-					workitem.state = job_state
-					js.task.dirty = True
-					session.commit()
-					updated_tasks.add(js.task)
+				for platform in self._platforms:
+					job_submissions = self.__job_submissions(session, platform)
+					for js, job_id, job_state in platform.submit(job_submissions):
+						workitem = session.query(db.WorkItem).filter(db.WorkItem.id == js.workitem_id).one()
+						workitem.job_id = job_id
+						workitem.state = job_state
+						js.task.dirty = True
+						session.commit()
+						updated_tasks.add(js.task)
 
 				session.close()
 
@@ -336,30 +383,31 @@ class WokEngine(Synchronizable):
 				#_log.debug("Checking job state changes ...")
 
 				# detect workitems which state has changed
-				for job_id, state in self._platform.jobs.state(): # TODO per case platform
-					try:
-						workitem = session.query(db.WorkItem).filter(db.WorkItem.job_id == job_id).one()
-					except NoResultFound:
-						_log.warn("No work-item available for the job {0} while retrieving state".format(job_id))
-						self._platform.jobs.abort(job_id)
-						self._platform.jobs.join(job_id)
-						continue
+				for platform in self._platforms:
+					for job_id, state in platform.jobs.state():
+						try:
+							workitem = session.query(db.WorkItem).filter(db.WorkItem.job_id == job_id).one()
+						except NoResultFound:
+							_log.warn("No work-item available for the job {0} while retrieving state".format(job_id))
+							platform.jobs.abort(job_id)
+							platform.jobs.join(job_id)
+							continue
 
-					if workitem.state != state:
-						case = self._cases_by_name[workitem.case.name]
-						task = case.component(workitem.task.cname)
-						task.dirty = True
+						if workitem.state != state:
+							case = self._cases_by_name[workitem.case.name]
+							task = case.component(workitem.task.cname)
+							task.dirty = True
 
-						workitem.state = state
-						workitem.substate = runstates.LOGS_RETRIEVAL
-						session.commit()
-						updated_tasks.add(task)
+							workitem.state = state
+							workitem.substate = runstates.LOGS_RETRIEVAL
+							session.commit()
+							updated_tasks.add(task)
 
-						# if workitem has finished, queue it for logs retrieval
-						if state in runstates.TERMINAL_STATES:
-							self._logs_queue.put((workitem.id, job_id))
+							# if workitem has finished, queue it for logs retrieval
+							if state in runstates.TERMINAL_STATES:
+								self._logs_queue.put((workitem.id, job_id))
 
-						_log.debug("[{}] Work-Item {} changed state to {}".format(case.name, workitem.cname, state))
+							_log.debug("[{}] Work-Item {} changed state to {}".format(case.name, workitem.cname, state))
 
 				#_log.debug("Updating components state ...")
 
@@ -447,7 +495,7 @@ class WokEngine(Synchronizable):
 
 				_log.debug("[{}] Reading logs for work-item {} ...".format(case.name, workitem.cname))
 
-				output = self._platform.jobs.output(job_id)
+				output = task.platform.jobs.output(job_id)
 				if output is None:
 					output = StringIO.StringIO()
 
@@ -515,7 +563,7 @@ class WokEngine(Synchronizable):
 				#_log.debug("Joining work-item %s ..." % task.cname)
 
 				with self._lock:
-					jr = self._platform.jobs.join(job_id) # TODO per case platform
+					jr = task.platform.jobs.join(job_id)
 
 					wr = Data.element(dict(
 							hostname=jr.hostname,
@@ -524,7 +572,7 @@ class WokEngine(Synchronizable):
 							finished=jr.finished.strftime(_DT_FORMAT) if jr.finished is not None else None,
 							exitcode=jr.exitcode.code if jr.exitcode is not None else None))
 
-					r = self._platform.data.load_workitem_result(case.name, task.cname, workitem.index)
+					r = task.platform.data.load_workitem_result(case.name, task.cname, workitem.index)
 
 					if r is not None:
 						if r.exception is not None:
@@ -595,15 +643,23 @@ class WokEngine(Synchronizable):
 	def projects(self):
 		return self._projects
 
+	def platform(self, name):
+		return self._platforms_by_name.get(name)
+
+	@property
+	def default_platform(self):
+		return self._default_platform
+
 	@synchronized
 	def start(self, wait=True, single_run=False):
 		self._log.info("Starting engine ...")
 
-		self._platform.start()
-		self._platform.callbacks.add(events.JOB_UPDATE, self._on_job_update)
+		for platform in self._platforms:
+			platform.start()
+			platform.callbacks.add(events.JOB_UPDATE, self._on_job_update)
 
-		for project in self._projects:
-			self._platform.sync_project(project)
+		#for project in self._projects:
+		#	self._default_platform.sync_project(project)
 
 		self._single_run = single_run
 		
@@ -685,7 +741,8 @@ class WokEngine(Synchronizable):
 		if self._run_thread is not None:
 			self._stop_threads()
 
-		self._platform.close()
+		for platform in self._platforms:
+			platform.close()
 
 		self._lock.acquire()
 
@@ -718,36 +775,49 @@ class WokEngine(Synchronizable):
 		return name in self._cases_by_name
 
 	@synchronized
-	def create_case(self, case_name, conf_builder, flow_uri): #TODO specify which platform
+	def create_case(self, case_name, conf_builder, project_name, flow_name):
 		"Creates a new workflow case"
 
 		session = db.Session()
 		if session.query(db.Case).filter(db.Case.name==case_name).count() > 0:
 			raise Exception("A case with this name already exists: {}".format(case_name))
 
-		platform = self._platform
+		flow_uri = "{}:{}".format(project_name, flow_name)
 
 		self._log.info("Creating case {} from {} ...".format(case_name, flow_uri))
 
 		try:
-			platform.data.remove_case(case_name)
-			platform.data.create_case(case_name)
+			try:
+				flow = self.projects.load_flow(flow_uri)
+				project = flow.project
+			except:
+				self._log.error("Error while loading the workflow from {}".format(flow_uri))
+				raise
 
-			case = Case(case_name, conf_builder, flow_uri, engine=self, platform=platform)
+			for platform in self._platforms:
+				try:
+					platform.data.remove_case(case_name)
+					platform.data.create_case(case_name)
+				except:
+					self._log.error("Error while initializing data for case {}".format(case_name))
+					raise
 
-			# Initialize case and register by name
-			case.initialize()
-			self._cases += [case]
-			self._cases_by_name[case_name] = case
+			try:
+				case = Case(case_name, conf_builder, project, flow, engine=self)
 
-			case.persist(session)
+				self._cases += [case]
+				self._cases_by_name[case_name] = case
 
-			session.flush()
-			self.notify(lock=False)
+				case.persist(session)
+
+				session.flush()
+				self.notify(lock=False)
+			except:
+				self._log.error("Error while creating case {} for the workflow {} with configuration {}".format(
+					case_name, flow_uri, conf_builder.get_conf()))
+				raise
 		except:
 			session.rollback()
-			self._log.error("Error while creating case {} for the workflow {} with configuration {}".format(
-				case_name, flow_uri, conf_builder.get_conf()))
 			raise
 
 		session.close()

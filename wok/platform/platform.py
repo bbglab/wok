@@ -26,8 +26,8 @@ class Platform(object):
 	"""
 
 	def __init__(self, name, conf):
-		self._name = name
 		self._conf = conf
+		self._name = conf.get("name", name)
 
 		self._log = logger.get_logger("wok.platform.{}".format(name))
 

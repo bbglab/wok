@@ -48,13 +48,11 @@ class Case(Base):
 	name = Column(String, unique=True)
 	title = Column(String)
 	created = Column(DateTime)
-	flow_uri = Column(String)
+	project = Column(String)
+	flow = Column(String)
 	conf = Column(Config)
 	state = Column(RunState)
 	removed = Column(Boolean, default=False)
-
-	project = Column(String)
-	platform = Column(String)
 
 	components = relationship("Component", backref="case")
 
@@ -153,11 +151,13 @@ class WorkItem(Base):
 	name = Column(String)
 	cname = Column(String)
 
-	priority = Column(Float)
-
 	index = Column(Integer)
 	state = Column(RunState)
 	substate = Column(RunState)
+
+	priority = Column(Float)
+
+	platform = Column(String)
 
 	partition = Column(Config)
 

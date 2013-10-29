@@ -15,6 +15,8 @@ class Storage(Plugin):
 	def __init__(self, conf):
 		super(Storage, self).__init__(conf)
 
+		self.name = conf.get("name", self.plugin_type)
+
 	def create_container(self, name):
 		"""
 		Creates a new container. If a container with this name already exists then it just returns it.

@@ -47,12 +47,13 @@ class ConfigFile(object):
 		self.path = os.path.abspath(path)
 
 	def merge_into(self, conf):
+		conf.merge(self.load())
+
+	def load(self):
 		try:
-			f = open(self.path, "r")
-			v = json.load(f)
-			cf = Data.create(v)
-			conf.merge(cf)
-			f.close()
+			with open(self.path, "r") as f:
+				v = json.load(f)
+			return Data.create(v)
 		except Exception as e:
 			from wok import logger
 			msg = ["Error loading configuration from ",

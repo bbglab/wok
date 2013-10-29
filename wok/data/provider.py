@@ -5,7 +5,7 @@ from stream import Stream
 class DataProvider(Plugin):
 
 	def __init__(self, conf):
-		super(DataProvider, self).__init__(conf, logger_name="wok.data.{}".format(self.name))
+		super(DataProvider, self).__init__(conf, logger_name="wok.data.{}".format(self.plugin_type))
 
 	# ------------------------------------------------------------------------------------------------------------------
 

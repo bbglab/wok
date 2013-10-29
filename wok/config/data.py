@@ -553,6 +553,11 @@ class DataElement(Data):
 			self[key] = l
 		return l
 
+	def delete(self, *keys):
+		for key in keys:
+			if key in self:
+				del self[key]
+
 	def transform(self, nodes):
 		e = DataElement(key_sep=self.key_sep)
 

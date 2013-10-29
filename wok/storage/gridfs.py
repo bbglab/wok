@@ -11,9 +11,9 @@ from wok.storage.storage import Storage, StorageContainer, StorageObject, Storag
 
 class GridFsStorage(Storage):
 
-	name = "gridfs"
+	plugin_type = "gridfs"
 
-	required_conf = ["url"]
+	plugin_required_conf = ["url"]
 
 	def __init__(self, conf):
 		super(GridFsStorage, self).__init__(conf)
