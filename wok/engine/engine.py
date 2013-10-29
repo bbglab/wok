@@ -337,7 +337,7 @@ class WokEngine(Synchronizable):
 						workitem = session.query(db.WorkItem).filter(db.WorkItem.job_id == job_id).one()
 					except NoResultFound:
 						_log.warn("No work-item available for the job {0} while retrieving state".format(job_id))
-						self._platform.jobs.abort(job_id)
+						self._platform.jobs.abort([job_id])
 						self._platform.jobs.join(job_id)
 						continue
 
