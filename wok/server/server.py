@@ -118,7 +118,7 @@ class WokServer(object):
 
 		log = logger.get_logger("")
 		log.removeHandler(log.handlers[0])
-		logging_conf = self.conf.get("wok.logging")
+		logging_conf = self.conf.clone().expand_vars().get("wok.logging")
 		logger.initialize(logging_conf)
 
 		self.logger.debug(repr(self.conf))

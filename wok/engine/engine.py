@@ -389,7 +389,7 @@ class WokEngine(Synchronizable):
 							workitem = session.query(db.WorkItem).filter(db.WorkItem.job_id == job_id).one()
 						except NoResultFound:
 							_log.warn("No work-item available for the job {0} while retrieving state".format(job_id))
-							platform.jobs.abort(job_id)
+							platform.jobs.abort([job_id])
 							platform.jobs.join(job_id)
 							continue
 
@@ -818,6 +818,8 @@ class WokEngine(Synchronizable):
 				raise
 		except:
 			session.rollback()
+			#self._log.error("Error while creating case {} for the workflow {} with configuration {}".format(
+			#	case_name, flow_uri, conf_builder.get_conf()))
 			raise
 
 		session.close()

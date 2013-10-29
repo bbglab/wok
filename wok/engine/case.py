@@ -185,8 +185,9 @@ class Case(object):
 		cmps = session.query(db.Component.id).filter(db.Component.case_id == self.id).subquery()
 		session.query(db.Task).filter(db.Task.id.in_(cmps)).delete(synchronize_session='fetch')
 		session.query(db.Block).filter(db.Block.id.in_(cmps)).delete(synchronize_session='fetch')
-		session.query(db.Case).filter(db.Case.id == self.id).delete()
+		session.query(db.Component).filter(db.Component.case_id == self.id).delete()
 		session.query(db.WorkItem).filter(db.WorkItem.case_id == self.id).delete()
+		session.query(db.Case).filter(db.Case.id == self.id).delete()
 
 	@property
 	def state(self):
