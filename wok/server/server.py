@@ -20,6 +20,7 @@ from wok.config.builder import ConfigBuilder
 from wok.engine import WokEngine
 
 import db
+from dbupdate import db_update
 from model import User, Group, Case, USERS_GROUP
 
 import core
@@ -132,25 +133,6 @@ class WokServer(object):
 		self.engine = WokEngine(self.conf)
 		self.engine.case_removed.connect(self._case_removed)
 
-	'''
-	def init(self, conf, app):
-		self.conf = conf
-		self.app = app
-
-		# FIXME is this really needed ? what about self.engine.work_path ?
-		self._work_path = self.conf.get("wok.work_path", os.path.join(os.getcwd(), "wok-files"))
-		if not os.path.exists(self._work_path):
-			os.makedirs(self._work_path)
-
-		self._init_flask()
-		self._init_engine()
-
-		db_path = os.path.join(self.engine.work_path, "server.db")
-		db.create_engine(uri="sqlite:///{}".format(db_path))
-
-		self._initialized = True
-	'''
-
 	def init_app(self, app):
 		self._init_flask(app)
 
@@ -164,7 +146,8 @@ class WokServer(object):
 		app.extensions["wok"] = self.engine
 		
 		db_path = os.path.join(self.engine.work_path, "server.db")
-		db.create_engine(uri="sqlite:///{}".format(db_path))
+		engine = db.create_engine(uri="sqlite:///{}".format(db_path))
+		db_update(engine, db.Session())
 
 		self._initialized = True
 
@@ -275,11 +258,12 @@ class WokServer(object):
 		exists_in_db = lambda: Case.query.filter(Case.owner_id == user.id, Case.name == case_name).count() > 0
 		return self.engine.exists_case(engine_case_name) or exists_in_db()
 
-	def create_case(self, user, case_name, conf_builder, flow_uri, properties=None, start=True):
+	def create_case(self, user, case_name, conf_builder, project_name, flow_name, properties=None, start=True):
 		case = Case(
 					owner_id=user.id,
 					name=case_name,
-					flow_uri=flow_uri,
+					project_name=project_name,
+					flow_name=flow_name,
 					conf=conf_builder.get_conf(),
 					properties=Data.element(properties))
 
@@ -291,14 +275,14 @@ class WokServer(object):
 		#while self.engine.exists_case(engine_case_name):
 		#	engine_case_name = "{}-{}".format(user.nick, uuid4().hex[-6:])
 
-		engine_case = self.engine.create_case(engine_case_name, conf_builder, flow_uri)
+		engine_case = self.engine.create_case(engine_case_name, conf_builder, project_name, flow_name)
 
 		case.created = engine_case.created
 		case.engine_name = engine_case_name
 		session.commit()
 
-		#TODO if start:
-		#	engine_case.start()
+		if start:
+			engine_case.start()
 
 		return case
 

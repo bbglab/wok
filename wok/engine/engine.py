@@ -22,35 +22,30 @@
 import os
 import shutil
 import StringIO
-import logging
 import time
 from Queue import Queue, Empty
 import threading
 from multiprocessing import cpu_count
-from datetime import datetime
 
 from sqlalchemy import func
 from sqlalchemy.orm.exc import NoResultFound
 from blinker import Signal
 
 from wok import logger
-from wok.config import COMMAND_CONF
 from wok.config.data import Data
-from wok.config.builder import ConfigBuilder, ConfigFile
+from wok.config.builder import ConfigFile
 from wok.core import runstates
 from wok.core import events
 from wok.core import errors
 from wok.core.utils.sync import Synchronizable, synchronized
 from wok.core.utils.logsdb import LogsDb
-from wok.core.utils.proctitle import set_proc_title, set_thread_title
-from wok.core.flow.loader import FlowLoader
-from wok.core.projects import ProjectManager
+from wok.core.utils.proctitle import set_thread_title
+from wok.engine.projects import ProjectManager
 from wok.platform.factory import create_platform
 from wok.core.cmd import create_command_builder
 from wok.jobs import JobSubmission
 
 import db
-from nodes import WorkItemNode
 from case import Case, SynchronizedCase
 
 _DT_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -268,11 +263,13 @@ class WokEngine(Synchronizable):
 
 		# remove data
 		self._log.debug("  * data ...")
-		case.platform.data.remove_case(case.name)
+		for platform in case.platforms:
+			platform.data.remove_case(case.name)
 
 		# remove storage
 		self._log.debug("  * storage ...")
-		case.platform.storage.delete_container(case.name)
+		for platform in case.platforms:
+			platform.storage.delete_container(case.name)
 
 		# remove engine db objects and finalize case
 		self._log.debug("  * database ...")
@@ -373,12 +370,17 @@ class WokEngine(Synchronizable):
 								session.commit()
 						else:
 							_log.info("Stopping {} jobs for case {} ...".format(num_job_ids, case.name))
-							job_ids = [int(r[0]) for r in session.query(db.WorkItem.job_id)
+
+							self._stopping_cases[case] = set()
+							for platform in self._platforms:
+								job_ids = [int(r[0]) for r in session.query(db.WorkItem.job_id)
 															.filter(db.WorkItem.case_id == case.id)\
+															.filter(db.WorkItem.platform == platform.name)\
 															.filter(~db.WorkItem.state.in_(runstates.TERMINAL_STATES))]
 
-							self._stopping_cases[case] = set(job_ids)
-							case.platform.jobs.abort(job_ids)
+								self._stopping_cases[case].update(job_ids)
+
+								platform.jobs.abort(job_ids)
 
 				#_log.debug("Checking job state changes ...")
 

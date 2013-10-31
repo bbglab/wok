@@ -7,13 +7,18 @@ from wok.config.builder import ConfigFile
 from wok.config.data import Data
 from wok.core.flow.loader import FlowLoader
 
+import rtconf
+
 _LOGGER_NAME = "wok.projects"
 
 class ConfRule(object):
-	def __init__(self, rule, base_path=None):
+	def __init__(self, rule, base_path=None, platform=None):
 		self.on = rule.get("on", {})
 		if isinstance(self.on, basestring):
 			self.on = dict(task=self.on)
+
+		if platform is not None:
+			self.on["platform"] = platform
 
 		self.dels = rule.get("del", default=Data.list)
 		if not Data.is_list(self.dels):
@@ -45,7 +50,7 @@ class ConfRule(object):
 
 	def match(self, **kwargs):
 		for key, value in self.on.items():
-			if key not in kwargs:
+			if key not in kwargs or kwargs[key] is None:
 				return False
 
 			if len(value) >= 2 and value[0] == "/" and value[-1] == "/": # regex
@@ -71,25 +76,9 @@ class ConfRule(object):
 		# apply merges
 		conf.merge(self.merge)
 
-class PlatformContext(object):
-	def __init__(self, desc):
-		self.platform = desc.get("platform")
-		self.path = desc.get("path")
-		self.conf = desc.get("conf", default=Data.element)
-		self.conf_rules = [ConfRule(rule) for rule in desc.get("conf_rules", default=Data.list)]
-
-	def merge(self,desc):
-		self.path = self.path or desc.get("path")
-		self.conf.merge(desc.get("conf"))
-		self.conf_rules += [ConfRule(rule) for rule in desc.get("conf_rules", default=Data.list)]
-		self.flows += desc.get("flows", default=Data.list)
-
-	def _repr(self, sb, indent=0):
-		sb += [" " * indent, "Platform [{}]".format(self.platform)]
-		sb += [" " * indent, "  path={0}".format(self.path)]
-		sb += [" " * indent, "  conf={0}".format(self.conf)]
-		sb += [" " * indent, "  conf_rules={0}".format(self.conf_rules)]
-		return sb
+	def __repr__(self):
+		sb = ["ConfRule", "on: ", repr(self.on), "set: ", repr(self.set), "merge: ", repr(self.merge)]
+		return "\n".join(sb)
 
 class Project(object):
 	def __init__(self, desc, name=None, logger=None, base_path=None):
@@ -99,31 +88,27 @@ class Project(object):
 
 		self._flow_loader = None
 
-		self._platforms = {}
+		platform = desc.get("platform")
 
-		if "platform" not in desc:
-			self.path = desc.get("path")
-			self.conf = desc.get("conf", default=Data.element)
-			self.conf_rules = [ConfRule(rule, base_path) for rule in desc.get("conf_rules", default=Data.list)]
-			self.flows = desc.get("flows", default=Data.list)
-		else:
-			self.conf = Data.element()
-			self.conf_rules = Data.list()
-			self.flows = Data.list()
-			self._platforms[desc["platform"]] = PlatformContext(desc)
+		self.path = desc.get("path")
+		self.conf = desc.get("conf", default=Data.element)
+		self.conf_rules = [ConfRule(rule, base_path, platform) for rule in desc.get("conf_rules", default=Data.list)]
+		self.flows = desc.get("flows", default=Data.list)
 
 	def merge(self, desc, base_path=None):
-		if "platform" not in desc:
-			self.path = self.path or desc.get("path")
-			self.conf.merge(desc.get("conf"))
-			self.conf_rules += [ConfRule(rule, base_path) for rule in desc.get("conf_rules", default=Data.list)]
-			self.flows += desc.get("flows", default=Data.list)
-		else:
-			platform_name = desc["platform"]
-			if platform_name not in self._platforms:
-				self._platforms[platform_name] = PlatformContext(desc)
+		platform = desc.get("platform")
+
+		if platform is not None and "path" in desc:
+			self.conf_rules += [ConfRule(dict(set=[["wok.project.path", desc["path"]]]), base_path, platform)]
+
+		if "conf" in desc:
+			if platform is None:
+				self.conf.merge(desc["conf"])
 			else:
-				self._platforms[platform_name].merge(desc)
+				self.conf_rules += [ConfRule(dict(merge=desc["conf"]), base_path, platform)]
+
+		self.conf_rules += [ConfRule(rule, base_path, platform) for rule in desc.get("conf_rules", default=Data.list)]
+		self.flows += desc.get("flows", default=Data.list)
 
 	def initialize(self):
 		self._log.info("Initializing project {} ...".format(self.name))
@@ -148,10 +133,14 @@ class Project(object):
 		flow.project = self
 		return flow
 
-	def get_conf(self, platform_name=None):
-		conf = self.conf
-		if platform_name is not None and platform_name in self._platforms:
-			conf = conf.clone().merge(self._platforms[platform_name].conf)
+	def get_conf(self, task_name=None, platform_name=None):
+		conf = self.conf.clone()
+
+		for rule in self.conf_rules:
+			pname = conf.get(rtconf.PLATFORM_TARGET, platform_name)
+			if rule.match(task_name=task_name, platform=pname):
+				rule.apply(conf)
+
 		return conf
 
 	def _repr(self, sb, indent=0):
@@ -230,20 +219,27 @@ class ProjectManager(object):
 			project["path"] = os.path.dirname(path)
 
 		if not os.path.isabs(project["path"]):
-			project["path"] = os.path.join(os.path.dirname(path), project["path"])
+			project["path"] = os.path.normpath(os.path.join(os.path.dirname(path), project["path"]))
 
 		return project
 
 	def _add_project_desc(self, pdesc, base_path=None):
-		if "name" not in pdesc:
-			raise Exception("Missing project name: {}".format(pdesc))
-
-		name = pdesc["name"]
-
-		if name not in self._projects:
-			self._projects[name] = Project(pdesc, name=name, base_path=base_path)
+		if "name" in pdesc:
+			if "extends" in pdesc and pdesc["name"] != pdesc["extends"]:
+				raise Exception("Project 'name' and 'extends' does not match")
+			project_name = pdesc["name"]
+		elif "extends" in pdesc:
+			project_name = pdesc["extends"]
 		else:
-			self._projects[name].merge(pdesc, base_path=base_path)
+			raise Exception("Missing project 'name' or 'extends': {}".format(pdesc))
+
+		if project_name not in self._projects:
+			if "extends" in pdesc:
+				raise Exception("Trying to extend an undefined project: {}".format(project_name))
+
+			self._projects[project_name] = Project(pdesc, name=project_name, base_path=base_path)
+		else:
+			self._projects[project_name].merge(pdesc, base_path=base_path)
 
 	def load_flow(self, uri):
 		m = self.FLOW_URI_RE.match(uri)
@@ -263,7 +259,7 @@ class ProjectManager(object):
 			return Data.element()
 
 		project = self._projects[project_name]
-		return project.get_conf(platform_name)
+		return project.get_conf(platform_name=platform_name)
 
 	def __iter__(self):
 		return iter(self._projects.values())

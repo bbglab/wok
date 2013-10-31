@@ -1,6 +1,6 @@
 ###############################################################################
 #
-#    Copyright 2009-2011, Universitat Pompeu Fabra
+#    Copyright 2009-2013, Universitat Pompeu Fabra
 #
 #    This file is part of Wok.
 #
@@ -63,7 +63,7 @@ class Case(object):
 
 		self._log = logger.get_logger("wok.case")
 
-		self.conf = self._initialize_conf(conf_builder)
+		self._initialize_conf()
 
 		# reset state
 		self._state = runstates.PAUSED
@@ -98,14 +98,15 @@ class Case(object):
 
 		#self._log.debug("Flow node tree:\n" + repr(self.root_node))
 	
-	def _initialize_conf(self, conf_builder):
+	def _initialize_conf(self):
 		# project defined config
-		conf = self.project.conf.clone()
+		self.conf = conf = self.project.get_conf()
 
 		# user defined config
-		user_conf = self.conf_builder.get_conf()
-		user_conf.delete("wok.work_path", "wok.projects", "wok.platforms", "wok.logging")
-		conf.merge(user_conf)
+		self.user_conf = self.conf_builder.get_conf()
+		if "wok" in self.user_conf:
+			self.user_conf.delete("wok.work_path", "wok.projects", "wok.platforms", "wok.logging")
+		conf.merge(self.user_conf)
 
 		# runtime config
 		conf[rtconf.CASE_NAME] = self.name
@@ -114,8 +115,6 @@ class Case(object):
 			uri=self.flow_uri))
 			#path=os.path.dirname(os.path.abspath(self.flow_uri)),
 			#file=os.path.basename(self.flow_uri)))
-
-		return conf
 
 	def persist(self, session):
 		case = db.Case(
@@ -633,20 +632,18 @@ class Case(object):
 		if component is None:
 			component = self.root_node
 
-		# apply case configuration (this includes project and user conf)
-		conf = self.conf.clone()
+		default_platform_target = self.engine.default_platform.name
+
+		# apply project configuration
+		conf = self.project.get_conf(task_name=component.cname, platform_name=default_platform_target)
 
 		# apply configuration defined in the workflow model
 		if component.model.conf is not None:
 			conf.merge(component.model.conf)
 
-		# apply configuration rules defined in the project
+		# apply user configuration
 
-		default_platform_target = self.engine.default_platform.name
-		for rule in self.project.conf_rules:
-			platform_target = conf.get(rtconf.PLATFORM_TARGET, default_platform_target)
-			if rule.match(task=component.cname, platform=platform_target):
-				rule.apply(conf)
+		conf.merge(self.user_conf)
 
 		if rtconf.PROJECT_PATH not in conf:
 			conf[rtconf.PROJECT_PATH] = self.project.path
