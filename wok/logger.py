@@ -19,6 +19,7 @@
 #
 ###############################################################################
 
+import os
 import logging
 import logging.handlers
 
@@ -207,6 +208,9 @@ def get_file_handler(conf):
 		return
 
 	filename = conf["filename"]
+	dirname = os.path.dirname(filename)
+	if not os.path.exists(dirname):
+		os.makedirs(dirname)
 	mode = conf.get("mode", "a")
 
 	return logging.FileHandler(filename, mode)
@@ -219,6 +223,9 @@ def get_timed_rotating_file_handler(conf):
 		return
 
 	filename = conf["filename"]
+	dirname = os.path.dirname(filename)
+	if not os.path.exists(dirname):
+		os.makedirs(dirname)
 	when = conf["when"]
 	interval = conf["interval"]
 
