@@ -2,7 +2,7 @@ import os
 import subprocess
 from urlparse import urlparse
 
-from wok.core.cmd import FLOW_PATH, SCRIPT_PATH, MODULE_SCRIPT_PATH
+from wok.core.cmd import ENV_PROJECT_PATH, ENV_SCRIPT_PATH, ENV_PLATFORM_SCRIPT_PATH
 from wok.core.errors import MissingConfigParamError
 
 from platform import Platform
@@ -66,12 +66,14 @@ class ClusterPlatform(Platform):
 		if ret != 0:
 			self._log.error("Error syncing project {}:\n{}".format(project.name, " ".join(cmd)))
 
+	"""
 	def _filter_job_submissions(self, job_submissions):
 		for js in job_submissions:
 			project = js.case.project
 			flow_path = os.path.dirname(js.task.flow_path)
 			rel_path = os.path.relpath(flow_path, project.path)
 			remote_flow_path = os.path.join(self._projects_path, project.name, rel_path)
-			js.env[FLOW_PATH] = remote_flow_path
-			js.env[MODULE_SCRIPT_PATH] = os.path.join(remote_flow_path, js.env[SCRIPT_PATH])
+			js.env[ENV_FLOW_PATH] = remote_flow_path
+			js.env[ENV_PLATFORM_SCRIPT_PATH] = os.path.join(remote_flow_path, js.env[ENV_SCRIPT_PATH])
 			yield js
+	"""

@@ -5,14 +5,15 @@ import json
 from wok import logger as woklogger
 from wok.config.builder import ConfigFile
 from wok.config.data import Data
+from wok.core import rtconf
 from wok.core.flow.loader import FlowLoader
-
-import rtconf
 
 _LOGGER_NAME = "wok.projects"
 
 class ConfRule(object):
 	def __init__(self, rule, base_path=None, platform=None):
+		rule = Data.create(rule)
+
 		self.on = rule.get("on", {})
 		if isinstance(self.on, basestring):
 			self.on = dict(task=self.on)
@@ -45,7 +46,7 @@ class ConfRule(object):
 				raise Exception("Configuration rule merge path not found: {}".format(self.merge))
 			with open(self.merge, "r") as f:
 				self.merge = Data.create(json.load(f))
-		if not Data.is_element(self.merge):
+		if self.merge is not None and not Data.is_element(self.merge):
 			raise Exception("Expected a dictionary for merge operation of rule: {}".format(repr(rule)))
 
 	def match(self, **kwargs):

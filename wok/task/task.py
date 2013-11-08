@@ -165,7 +165,7 @@ class Task(object):
 		if signum in [signal.SIGABRT, signal.SIGINT, signal.SIGTERM, signal.SIGQUIT]:
 			raise Abort(self._signal_names[signum])
 		else:
-			self.logger.warn("Received signal {0}".format(self._signal_names[signum]))
+			self.logger.debug("Received signal {0}".format(self._signal_names[signum]))
 
 	def __dot_product(self, ports):
 		names = [port["name"] for port in ports]

@@ -656,9 +656,17 @@ class WokEngine(Synchronizable):
 	def start(self, wait=True, single_run=False):
 		self._log.info("Starting engine ...")
 
-		for platform in self._platforms:
-			platform.start()
-			platform.callbacks.add(events.JOB_UPDATE, self._on_job_update)
+		started_platforms = []
+		try:
+			for platform in self._platforms:
+				started_platforms += [platform]
+				platform.start()
+				platform.callbacks.add(events.JOB_UPDATE, self._on_job_update)
+		except BaseException as ex:
+			self._log.error(str(ex))
+			for platform in started_platforms:
+				platform.close()
+			raise
 
 		#for project in self._projects:
 		#	self._default_platform.sync_project(project)

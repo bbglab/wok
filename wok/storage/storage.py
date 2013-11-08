@@ -1,3 +1,6 @@
+import os
+from fnmatch import fnmatch
+
 from wok.core.plugin import Plugin
 
 class StorageError(Exception):
@@ -106,6 +109,37 @@ class StorageContainer(object):
 		:param delimiter: list distinct object names up to either the first delimiter or the end. Useful for pseudo-hierarchical navigation.
 		"""
 		raise NotImplementedError()
+
+	def upload(self, source_path, object_prefix="", include=None, exclude=None, start_callback=None, **kwargs):
+		"""
+		Uploads all the files found in a given path into the container as objects.
+		:param source_path: source path
+		:param object_prefix: name prefix for all the objects
+		:param include: the list of files to include. If it is None include all files not explicitly excluded. It can contain globs.
+		:param exclude: the list of files to exclude.
+		:param start_callback: a callable to notify the upload start. As argument receives the relative file path.
+		:param kwargs: optional arguments passed to put_data()
+		"""
+
+		def filename_match(filename, patterns):
+			for pattern in patterns:
+				if fnmatch(filename, pattern):
+					return True
+			return False
+
+		for path, folders, files in os.walk(source_path):
+			rel_path = os.path.relpath(path, source_path) if path != source_path else ""
+			for filename in files:
+				rel_file_path = os.path.join(rel_path, filename)
+				if include is not None and filename_match(rel_file_path, include)\
+						or exclude is not None and filename_match(rel_file_path, exclude):
+					continue
+
+				if start_callback is not None:
+					start_callback(rel_file_path)
+
+				obj = self.create_object(os.path.join(object_prefix, rel_file_path))
+				obj.put_data(os.path.join(path, filename), **kwargs)
 
 	def repr(self):
 		return "{}://{}".format(

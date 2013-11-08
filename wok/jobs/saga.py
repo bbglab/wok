@@ -109,7 +109,8 @@ class SagaJobManager(JobManager):
 		saga.job.SUSPENDED	: runstates.WAITING,
 		saga.job.DONE		: runstates.FINISHED,
 		saga.job.FAILED		: runstates.FAILED,
-		saga.job.CANCELED	: runstates.ABORTED
+		saga.job.CANCELED	: runstates.ABORTED,
+        saga.job.UNKNOWN    : runstates.UNKNOWN
 	}
 
 	def __init__(self, conf):
@@ -288,6 +289,7 @@ class SagaJobManager(JobManager):
 
 		session = self._create_session()
 
+        # TODO make it more robust to exceptions
 		with self._lock:
 			while self._running:
 
@@ -297,7 +299,7 @@ class SagaJobManager(JobManager):
 								SagaJob.saga_state != None,
 								~SagaJob.state.in_(runstates.TERMINAL_STATES)):
 
-					self._log.debug("Checking state for [{}] {} ... ".format(job.id, job.name))
+					#self._log.debug("Checking state for [{}] {} ... ".format(job.id, job.name))
 
 					try:
 						if job.saga_getjob_start is None:
@@ -366,24 +368,26 @@ class SagaJobManager(JobManager):
 
 	def _output(self, job):
 
-		remote_path = "{}{}".format(self._file_url, job.output)
+		remote_url = "{}{}".format(self._file_url, job.output)
 
 		local_path = os.path.join(self._output_path, job.case_name)
 		if not os.path.exists(local_path):
 			os.makedirs(local_path)
-
 		local_path = os.path.join(local_path, os.path.basename(job.output))
+		local_url = "file://{}".format(local_path)
 
 		#self._log.error("\n[remote] {}\n[local ] {}".format(remote_path, local_path))
 
 		try:
 			self._lock.release()
-			ofile = saga.filesystem.File(remote_path, session=self._session)
-			ofile.copy("file://{}".format(local_path))
+			#self._log.debug("Retrieving task output ...\n  From: {}\n  To  : {}".format(remote_url, local_path))
+			ofile = saga.filesystem.File(remote_url, session=self._session)
+			ofile.copy(local_url)
 			return open(local_path)
 		except Exception as ex:
-			self._log.error("Error while retrieving output file from {}".format(remote_path))
-			self._log.exception(ex)
+			self._log.error(str(ex))
+			from traceback import format_exc
+			self._log.debug(format_exc(ex))
 			return None
 		finally:
 			self._lock.acquire()

@@ -19,11 +19,12 @@
 #
 ###############################################################################
 
+from datetime import timedelta
+
 from wok.config.data import Data
 
 from wok.core import runstates
 
-import rtconf
 
 class Node(object):
 
@@ -113,15 +114,6 @@ class ComponentNode(ModelNode):
 		# number of workitems for each state {<state, count>}
 		self.workitem_count_by_state = {}
 
-		"""
-		# attributes
-		self.attr = Data.element()
-		if model.maxpar is not None:
-			self.attr["maxpar"] = model.maxpar
-		if model.wsize is not None:
-			self.attr["wsize"] = model.wsize
-		"""
-
 		self.in_ports = []
 		self.in_port_map = {}
 
@@ -177,28 +169,6 @@ class ComponentNode(ModelNode):
 	def wsize(self, value):
 		self._wsize = value
 
-	"""
-	@property
-	def conf(self):
-		if self._conf is not None:
-			return self._conf
-
-		if self.parent is None:
-			conf = self.case.conf.clone()
-		else:
-			conf = self.parent.conf.clone()
-
-		if self.model.conf is not None:
-			conf.merge(self.model.conf)
-
-		self._conf = conf
-		self._expanded_conf = None
-
-		self.case.apply_task_rules(self, conf)
-
-		return self._conf
-	"""
-
 	@property
 	def expanded_conf(self):
 		if self._expanded_conf is None:
@@ -217,6 +187,12 @@ class ComponentNode(ModelNode):
 			res.merge(self.model.resources)
 
 		return res
+
+	@property
+	def elapsed(self):
+		if self.started is None or self.finished is None:
+			return timedelta()
+		return self.finished - self.started
 
 	def set_in_ports(self, in_ports):
 		self.in_ports = in_ports
@@ -250,7 +226,8 @@ class ComponentNode(ModelNode):
 		e["serializer"] = self.serializer #TODO remove
 		e["maxpar"] = self.maxpar
 		e["wsize"] = self.wsize
-		#e["attr"] = self.attr
+		e["started"] = self.started
+		e["finished"] = self.finished
 		e["conf"] = self.conf
 		e["resources"] = self.resources
 		e.element("tasks_count", self._tasks_count_by_state)

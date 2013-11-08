@@ -20,27 +20,22 @@
 ###############################################################################
 
 import sys
-import os.path
 import math
 import re
-import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from collections import deque
 
 from sqlalchemy import func, distinct
 
 from wok import logger
-from wok.config.builder import ConfigBuilder
 from wok.config.data import Data
-from wok.core import runstates
+from wok.core import runstates, rtconf
 from wok.core.utils.sync import synchronized
 from wok.core.utils.sync import Synchronizable
 from wok.core.utils.proxies import ReadOnlyProxy
-from wok.data import DataProvider
 from wok.data.portref import PortDataRef, MergedPortDataRef
 
 from nodes import *
-import rtconf
 import db
 
 # 2011-10-06 18:39:46,849 bfast_localalign-0000 INFO  : hello world
@@ -570,8 +565,8 @@ class Case(object):
 			comps = [[order, comp] for comp, (order, count) in dep_count.items() if count == 0]
 
 		if len(dep_count) > 0:
-			self._log.warn("Some components got excluded from the list of tasks ordered by its dependencies:\n".format(
-				"\n  ".join([(comp.cname, count) for comp, (order, count) in dep_count.items()])))
+			self._log.warn("Some components got excluded from the list of tasks ordered by its dependencies:\n  {}".format(
+				"\n  ".join(sorted([comp.cname for comp in dep_count.keys()]))))
 
 		return tasks
 
@@ -643,12 +638,12 @@ class Case(object):
 
 		# apply user configuration
 
+		#print component.cname, ">>>", conf, ">>>>>>>>>>>>>>>>", self.user_conf
+
 		conf.merge(self.user_conf)
 
 		if rtconf.PROJECT_PATH not in conf:
 			conf[rtconf.PROJECT_PATH] = self.project.path
-
-		#print component.cname, ">>>", conf
 
 		component.conf = conf.expand_vars()
 
