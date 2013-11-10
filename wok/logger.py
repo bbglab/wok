@@ -179,7 +179,7 @@ def get_handler(logger, conf):
 
 def get_smtp_handler(conf):
 	_log = logging.getLogger(__name__)
-	mf = conf.missing_fields(["host", "user", "from", "to", "subject"])
+	mf = conf.missing_keys(["host", "user", "from", "to", "subject"])
 	if len(mf) != 0:
 		_log.error("The following fields for the handler are missing: {0}\n{1}".format(", ".join(mf), repr(conf)))
 		return
@@ -202,7 +202,7 @@ def get_smtp_handler(conf):
 
 def get_file_handler(conf):
 	_log = logging.getLogger(__name__)
-	mf = conf.missing_fields(["filename"])
+	mf = conf.missing_keys(["filename"])
 	if len(mf) != 0:
 		_log.error("The following fields for the handler are missing: {0}\n{1}".format(", ".join(mf), repr(conf)))
 		return
@@ -217,7 +217,7 @@ def get_file_handler(conf):
 
 def get_timed_rotating_file_handler(conf):
 	_log = logging.getLogger(__name__)
-	mf = conf.missing_fields(["filename", "when", "interval"])
+	mf = conf.missing_keys(["filename", "when", "interval"])
 	if len(mf) != 0:
 		_log.error("The following fields for the handler are missing: {0}\n{1}".format(", ".join(mf), repr(conf)))
 		return
