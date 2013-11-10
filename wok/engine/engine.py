@@ -52,7 +52,7 @@ _DT_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 class WokEngine(Synchronizable):
 	"""
-	The Wok engine manages the execution of workflow instances.
+	The Wok engine manages the execution of workflow cases.
 	Each case represents a workflow loaded with a certain configuration.
 	"""
 
@@ -127,6 +127,7 @@ class WokEngine(Synchronizable):
 
 		# signals
 
+		self.case_created = Signal()
 		self.case_state_changed = Signal()
 		self.case_started = Signal()
 		self.case_finished = Signal()
@@ -434,6 +435,11 @@ class WokEngine(Synchronizable):
 							sb += [sep, "{}={}".format(state.symbol, count[state])]
 							if sep == " ":
 								sep = ", "
+
+					if task.state == runstates.FINISHED and task.state in count:
+						elapsed = str(task.elapsed)
+						elapsed = elapsed.split(".")[0]
+						sb += [" ", "<{}>".format(elapsed)]
 
 					self._log.info("".join(sb))
 
@@ -835,6 +841,8 @@ class WokEngine(Synchronizable):
 		session.close()
 
 		self._log.debug("\n" + repr(case))
+
+		self.case_created.send(case)
 
 		return SynchronizedCase(self, case)
 

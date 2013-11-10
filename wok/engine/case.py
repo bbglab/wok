@@ -849,14 +849,19 @@ class Case(object):
 				if component in notify_component.waiting:
 					notify_component.waiting.remove(component)
 
-		if state == runstates.RUNNING and component.started is None:
-			component.started = datetime.now()
-			component.finished = None
+		if state == runstates.RUNNING:
+			if component.started is None:
+				component.started = datetime.now()
+				component.finished = None
+
+			#self.engine.case_started.send(self)
 
 		if state in runstates.TERMINAL_STATES:
 			component.finished = datetime.now()
 			if component.started is None:
 				component.started = component.finished
+
+			#self.engine.case_finished.send(self)
 
 	def update_states(self, session, component=None):
 		if component is None:
@@ -873,11 +878,19 @@ class Case(object):
 
 		if self.update_component_state(component, children_states):
 			session.query(db.Component).filter(db.Component.id == component.id)\
-					.update({db.Component.state : component.state})
+					.update({db.Component.state : component.state,
+							 db.Component.started : component.started,
+							 db.Component.finished : component.finished})
 			if component == self.root_node and self._state != runstates.PAUSED:
-				self.state = component.state # update case state from the root node
-				session.query(db.Case).filter(db.Case.id == self.id).update({db.Case.state : self.state})
-			#session.commit()
+				prev_state = self.state
+				if component.state != prev_state:
+					self.state = component.state # update case state from the root node
+					session.query(db.Case).filter(db.Case.id == self.id).update({db.Case.state : self.state})
+
+				if self.state == runstates.RUNNING:
+					self.engine.case_started.send(self)
+				elif self.state in runstates.TERMINAL_STATES:
+					self.engine.case_finished.send(self)
 
 	def update_component_state(self, component, children_states):
 		"""

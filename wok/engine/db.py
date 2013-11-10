@@ -106,6 +106,9 @@ class Component(Node, Base):
 
 	state = Column(RunState)
 
+	started = Column(DateTime)
+	finished = Column(DateTime)
+
 	#depends = Column()
 	#waiting = Column()
 	#notify = Column()
