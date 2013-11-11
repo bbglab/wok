@@ -212,8 +212,8 @@ class SagaJobManager(JobManager):
 				try:
 					#self._log.debug("Looking for waiting jobs ...")
 					job = session.query(SagaJob).filter(
-							SagaJob.state==runstates.WAITING,
-							SagaJob.saga_state==None).order_by(SagaJob.priority).first()
+							SagaJob.state == runstates.WAITING,
+							SagaJob.saga_state == None).order_by(SagaJob.priority).first()
 
 					if job is not None:
 						pass #self._queued_count += 1
@@ -265,15 +265,16 @@ class SagaJobManager(JobManager):
 					saga_job = self._job_service.create_job(jd)
 					saga_job.run()
 
-					self._queued_count += 1
-
 					job.saga_id = saga_job.id
 					job.saga_state = saga_job.state
 					job.output = jd.output
 					session.commit()
+
+					self._queued_count += 1
+
 				except Exception as ex:
 					self._log.exception(ex)
-					if saga_job is not None and saga_job.state in [saga.job.RUNNING, saga.job.SUSPENDED]:
+					if saga_job is not None: # and saga_job.state in [saga.job.RUNNING, saga.job.SUSPENDED]:
 						try:
 							saga_job.cancel()
 						finally:
@@ -306,12 +307,10 @@ class SagaJobManager(JobManager):
 							job.saga_getjob_start = time.time()
 							session.commit()
 
-						#DEL self._log.debug("job_service.get_job")
 						#self._qlock.release()
 						saga_job = self._job_service.get_job(job.saga_id)
 						#self._qlock.acquire()
 
-						#DEL self._log.debug("job.state")
 						job.saga_state = saga_job.state
 
 						next_state = self.__JOB_STATE_FROM_SAGA[job.saga_state]

@@ -253,31 +253,36 @@ class WokEngine(Synchronizable):
 		del self._cases_by_name[case.name]
 		self._cases.remove(case)
 
-		#TODO clean the job manager output files
-
-		try:
-			self._log.debug("  * logs ...")
-			logs_path = os.path.join(self._work_path, "logs", case.name)
-			shutil.rmtree(logs_path)
-		except:
-			self._log.exception("Error removing logs at {}".format(logs_path))
-
-		# remove data
-		self._log.debug("  * data ...")
-		for platform in case.platforms:
-			platform.data.remove_case(case.name)
-
-		# remove storage
-		self._log.debug("  * storage ...")
-		for platform in case.platforms:
-			platform.storage.delete_container(case.name)
-
 		# remove engine db objects and finalize case
 		self._log.debug("  * database ...")
 		case.remove(session)
 
-		# emit signal
-		self.case_removed.send(case) #FIXME unlock or deferred send ???
+		self._lock.release()
+		try:
+			#TODO clean the job manager output files
+
+			try:
+				self._log.debug("  * logs ...")
+				logs_path = os.path.join(self._work_path, "logs", case.name)
+				shutil.rmtree(logs_path)
+			except:
+				self._log.exception("Error removing logs at {}".format(logs_path))
+
+			# remove data
+			self._log.debug("  * data ...")
+			for platform in case.platforms:
+				platform.data.remove_case(case.name)
+
+			# remove storage
+			self._log.debug("  * storage ...")
+			for platform in case.platforms:
+				platform.storage.delete_container(case.name)
+
+			# emit signal
+			self.case_removed.send(case)
+
+		finally:
+			self._lock.acquire()
 
 	# threads ----------------------
 
@@ -422,6 +427,13 @@ class WokEngine(Synchronizable):
 					case.clean_components(session)
 					session.commit()
 
+					if case.state == runstates.RUNNING:
+						self._lock.release()
+						try:
+							self.case_started.send(case)
+						finally:
+							self._lock.acquire()
+
 				for task in updated_tasks:
 					case = task.case
 					#_log.debug("[{}] Component {} updated state to {} ...".format(
@@ -445,11 +457,14 @@ class WokEngine(Synchronizable):
 
 				session.close()
 
-			except Exception:
+			except BaseException as ex:
 				num_exc += 1
-				_log.exception("Exception in wok-engine run thread (%d)" % num_exc)
+				_log.info("Exception in run thread ({}): {}".format(num_exc, str(ex)))
 				if num_exc > 3:
 					raise
+				else:
+					from traceback import format_exc
+					_log.debug(format_exc())
 
 		set_thread_title("finishing")
 
@@ -525,10 +540,13 @@ class WokEngine(Synchronizable):
 				logs_db.close()
 
 				_log.debug("[{}] Done with logs of work-item {}".format(case.name, workitem.cname))
-			except:
+
+			except BaseException as ex:
 				num_exc += 1
 				session.rollback()
-				_log.exception("Exception in wok-engine logs thread ({})".format(num_exc))
+				_log.info("Exception in logs thread ({}): {}".format(num_exc, str(ex)))
+				from traceback import format_exc
+				_log.debug(format_exc())
 
 			finally:
 				workitem.substate = runstates.JOINING
@@ -595,9 +613,6 @@ class WokEngine(Synchronizable):
 
 					session.commit()
 
-					if case.state in runstates.TERMINAL_STATES and case.num_active_workitems == 0:
-						_log.info("Case {} {}. Total time: {}".format(case.name, case.state.title, str(case.elapsed)))
-
 					# check if there are still more work-items
 					num_workitems = session.query(func.count(db.WorkItem.id)).filter(
 						~db.WorkItem.state.in_(runstates.TERMINAL_STATES)).scalar()
@@ -631,9 +646,16 @@ class WokEngine(Synchronizable):
 						else:
 							_log.debug("Still waiting for {} jobs to stop".format(len(job_ids)))
 
-			except:
+				if case.state in runstates.TERMINAL_STATES and case.num_active_workitems == 0:
+					_log.info("[{}] Case {}. Total time: {}".format(case.name, case.state.title, str(case.elapsed)))
+
+					self.case_finished.send(case)
+
+			except BaseException as ex:
 				num_exc += 1
-				_log.exception("Exception in wok-engine join thread (%d)" % num_exc)
+				_log.info("Exception in join thread ({}): {}".format(num_exc, str(ex)))
+				from traceback import format_exc
+				_log.debug(format_exc())
 
 		_log.debug("Engine join thread finished")
 
@@ -842,7 +864,11 @@ class WokEngine(Synchronizable):
 
 		self._log.debug("\n" + repr(case))
 
-		self.case_created.send(case)
+		self._lock.release()
+		try:
+			self.case_created.send(case)
+		finally:
+			self._lock.acquire()
 
 		return SynchronizedCase(self, case)
 

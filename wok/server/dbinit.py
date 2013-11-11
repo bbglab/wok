@@ -4,8 +4,12 @@ from model import DB_VERSION, DbParam
 
 __CHANGES = [
 	[ # 2
-		"ALTER TABLE cases ADD COLUMN project_name TEXT",
-		"ALTER TABLE cases ADD COLUMN flow_name TEXT"
+	  	"ALTER TABLE cases ADD COLUMN started DATETIME",
+		"ALTER TABLE cases ADD COLUMN finished DATETIME",
+		"ALTER TABLE cases ADD COLUMN state VARCHAR",
+		"ALTER TABLE cases ADD COLUMN project_name VARCHAR",
+		"ALTER TABLE cases ADD COLUMN flow_name VARCHAR",
+		"CREATE UNIQUE INDEX ix_cases_engine_name ON cases (engine_name)"
 	]
 ]
 
@@ -30,4 +34,10 @@ def db_update(engine, session, logger=None):
 				engine.execute(sql)
 
 	version_param.value = DB_VERSION
-	session.commit()
+
+def db_init(engine, session, new_db, logger=None):
+	if new_db:
+		version_param = DbParam(name="version", value=DB_VERSION)
+		session.add(version_param)
+	else:
+		db_update(engine, session, logger)

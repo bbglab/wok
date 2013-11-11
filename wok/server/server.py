@@ -20,7 +20,7 @@ from wok.config.builder import ConfigBuilder
 from wok.engine import WokEngine
 
 import db
-from dbupdate import db_update
+from dbinit import db_init, db_update
 from model import User, Group, Case, USERS_GROUP
 
 import core
@@ -38,6 +38,8 @@ class WokServer(object):
 
 	# signals
 
+	case_started = Signal()
+	case_finished = Signal()
 	case_removed = Signal()
 
 	def __init__(self, app=None, start_engine=True):
@@ -131,6 +133,9 @@ class WokServer(object):
 		self.logger.info("Initializing Wok engine ...")
 
 		self.engine = WokEngine(self.conf)
+		self.engine.case_state_changed.connect(self._case_state_changed)
+		self.engine.case_started.connect(self._case_started)
+		self.engine.case_finished.connect(self._case_finished)
 		self.engine.case_removed.connect(self._case_removed)
 
 	def init_app(self, app):
@@ -146,8 +151,12 @@ class WokServer(object):
 		app.extensions["wok"] = self.engine
 		
 		db_path = os.path.join(self.engine.work_path, "server.db")
+		new_db = not os.path.exists(db_path)
 		engine = db.create_engine(uri="sqlite:///{}".format(db_path))
-		db_update(engine, db.Session())
+		session = db.Session()
+		db_init(engine, session, new_db)
+		session.commit()
+		session.close()
 
 		self._initialized = True
 
@@ -245,11 +254,35 @@ class WokServer(object):
 
 	# Cases ------------------------------------------------------------------------------------------------------------
 
+	def _case_state_changed(self, engine_case):
+		session = db.Session()
+		case = session.query(Case).filter(Case.engine_name == engine_case.name).first()
+		if case is not None:
+			case.state = engine_case.state
+			session.commit()
+
+	def _case_started(self, engine_case):
+		session = db.Session()
+		case = session.query(Case).filter(Case.engine_name == engine_case.name).first()
+		if case is not None:
+			case.started = engine_case.started
+			self.case_started.send(case, server=self, logger=self.logger)
+			session.commit()
+
+	def _case_finished(self, engine_case):
+		session = db.Session()
+		case = session.query(Case).filter(Case.engine_name == engine_case.name).first()
+		if case is not None:
+			case.state = engine_case.state
+			case.finished = engine_case.finished
+			self.case_finished.send(case, server=self, logger=self.logger)
+			session.commit()
+
 	def _case_removed(self, engine_case):
 		session = db.Session()
 		case = session.query(Case).filter(Case.engine_name == engine_case.name).first()
 		if case is not None:
-			self.case_removed.send(case)
+			self.case_removed.send(case, server=self, logger=self.logger)
 			session.delete(case)
 			session.commit()
 

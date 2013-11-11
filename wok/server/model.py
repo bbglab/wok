@@ -3,7 +3,7 @@ from sqlalchemy.orm import relationship, backref
 
 from flask.ext.login import UserMixin
 
-from wok.core.db.customtypes import Config
+from wok.core.db.customtypes import Config, RunState
 
 from db import Base
 
@@ -87,8 +87,11 @@ class Case(Base):
 
 	name = Column(String)
 	created = Column(DateTime)
+	started = Column(DateTime)
+	finished = Column(DateTime)
+	state = Column(RunState)
 	removed = Column(Boolean, default=False)
-	engine_name = Column(String)
+	engine_name = Column(String, index=True, unique=True)
 	project_name = Column(String)
 	flow_name = Column(String)
 	conf = Column(Config)

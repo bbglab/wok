@@ -2,6 +2,7 @@ import os
 from fnmatch import fnmatch
 
 from wok.core.plugin import Plugin
+from wok.logger import get_logger
 
 class StorageError(Exception):
 	pass
@@ -81,7 +82,7 @@ class StorageContainer(object):
 
 	def get_object(self, name):
 		"""
-		Return an object by name.
+		Return an object by name. If the object doesn't exist it returns an empty object.
 		:param name: the object's name.
 		:return: the object.
 		"""
@@ -112,7 +113,7 @@ class StorageContainer(object):
 
 	def upload(self, source_path, object_prefix="", include=None, exclude=None, start_callback=None, **kwargs):
 		"""
-		Uploads all the files found in a given path into the container as objects.
+		Uploads all the files found in a given local path into the container as objects.
 		:param source_path: source path
 		:param object_prefix: name prefix for all the objects
 		:param include: the list of files to include. If it is None include all files not explicitly excluded. It can contain globs.
@@ -121,18 +122,20 @@ class StorageContainer(object):
 		:param kwargs: optional arguments passed to put_data()
 		"""
 
-		def filename_match(filename, patterns):
-			for pattern in patterns:
-				if fnmatch(filename, pattern):
-					return True
-			return False
+		def walk(source_path):
+			if os.path.isfile(source_path):
+				base_path = os.path.dirname(source_path)
+				yield base_path, base_path, [os.path.basename(source_path)]
+			else:
+				for path, folders, files in os.walk(source_path):
+					yield source_path, path, files
 
-		for path, folders, files in os.walk(source_path):
-			rel_path = os.path.relpath(path, source_path) if path != source_path else ""
+		for base_path, path, files in walk(source_path):
+			rel_path = os.path.relpath(path, base_path) if path != base_path else ""
 			for filename in files:
 				rel_file_path = os.path.join(rel_path, filename)
-				if include is not None and filename_match(rel_file_path, include)\
-						or exclude is not None and filename_match(rel_file_path, exclude):
+				if include is not None and not self.__filename_match(rel_file_path, include)\
+						or exclude is not None and self.__filename_match(rel_file_path, exclude):
 					continue
 
 				if start_callback is not None:
@@ -140,6 +143,43 @@ class StorageContainer(object):
 
 				obj = self.create_object(os.path.join(object_prefix, rel_file_path))
 				obj.put_data(os.path.join(path, filename), **kwargs)
+
+	def download(self, target_path, prefix=None, delimiter=None, include=None, exclude=None, start_callback=None):
+		"""
+		Download to a local path the selected objects in the container.
+		:param prefix: download only the objects which name starts with this prefix. Useful for pseudo-hierarchical navigation.
+		:param delimiter: download distinct objects with names up to either the first delimiter or the end. Useful for pseudo-hierarchical navigation.
+		"""
+
+		for obj_name in self.list_objects(prefix, delimiter):
+			if include is not None and not self.__filename_match(obj_name, include)\
+					or exclude is not None and self.__filename_match(obj_name, exclude):
+				continue
+
+			path = os.path.normpath(obj_name)
+			path = os.path.normpath("{}/{}".format(target_path, obj_name))
+			if os.path.relpath(path, target_path).startswith(".."):
+				get_logger(__name__).warn("Object output path goes outside the target path: {}".format(path))
+				continue
+
+			#print "***", obj_name, "--->", path
+
+			base_path = os.path.dirname(path)
+			if not os.path.exists(base_path):
+				os.makedirs(base_path)
+
+			prefixed_obj_name = (prefix or "") + obj_name
+			obj = self.get_object(prefixed_obj_name)
+			if obj.exists():
+				start_callback(obj_name)
+				obj.get_data(path)
+
+	@staticmethod
+	def __filename_match(filename, patterns):
+		for pattern in patterns:
+			if fnmatch(filename, pattern):
+				return True
+		return False
 
 	def repr(self):
 		return "{}://{}".format(

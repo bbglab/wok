@@ -152,7 +152,10 @@ class FilesStorageContainer(StorageContainer):
 		listed = set()
 		for path, folders, files in os.walk(self._path):
 			for filename in files:
-				name = os.path.join(path, filename)
+				if filename.endswith("__metadata__"):
+					continue
+
+				name = os.path.relpath(os.path.join(path, filename), self._path)
 				if prefix is not None:
 					if not name.startswith(prefix):
 						continue
@@ -295,7 +298,7 @@ class FilesStorageObject(StorageObject):
 		:return True or False
 		"""
 
-		return os.path.exists(self._path)
+		return os.path.isfile(self._path)
 
 	def delete(self):
 		"""

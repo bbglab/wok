@@ -887,11 +887,6 @@ class Case(object):
 					self.state = component.state # update case state from the root node
 					session.query(db.Case).filter(db.Case.id == self.id).update({db.Case.state : self.state})
 
-				if self.state == runstates.RUNNING:
-					self.engine.case_started.send(self)
-				elif self.state in runstates.TERMINAL_STATES:
-					self.engine.case_finished.send(self)
-
 	def update_component_state(self, component, children_states):
 		"""
 		Updates the state of a component depending on the state of the children elements
@@ -1018,7 +1013,7 @@ class Case(object):
 	def start(self):
 		if self.state not in [runstates.READY, runstates.RUNNING, runstates.PAUSED,
 								runstates.FAILED, runstates.ABORTED]:
-			raise Exception("Illegal action '%s' for state '%s'" % ("start", self.state))
+			raise Exception("Illegal action '{}' for state '{}'".format("start", self.state))
 
 		session = db.Session()
 
@@ -1031,41 +1026,41 @@ class Case(object):
 		session.commit()
 		session.close()
 
-		self._log.info("Case {} started".format(self.name))
+		self._log.info("[{}] Case started".format(self.name))
 
 	def pause(self):
 		if self.state not in [runstates.RUNNING, runstates.PAUSED]:
-			raise Exception("Illegal action '%s' for state '%s'" % ("pause", self.state))
+			raise Exception("Illegal action '{}' for state '{}'".format("pause", self.state))
 
 		# FIXME update component state in the database
 		self.state = runstates.PAUSED
 
-		self._log.info("Case {} paused".format(self.name))
+		self._log.info("[{}] Case paused".format(self.name))
 
 	def stop(self):
 		if self.state not in [runstates.RUNNING, runstates.PAUSED]:
-			raise Exception("Illegal action '%s' for state '%s'" % ("stop", self.state))
+			raise Exception("Illegal action '{}' for state '{}'".format("stop", self.state))
 
 		# FIXME update component state in the database
 		if self.state != runstates.READY:
 			self.state = runstates.ABORTING
 
-		self._log.info("Case {} aborted".format(self.name))
+		self._log.info("[{}] Case aborted".format(self.name))
 
 	def reset(self):
 		if self.state not in [runstates.READY, runstates.PAUSED, runstates.FINISHED,
 								runstates.FAILED, runstates.ABORTED]:
-			raise Exception("Illegal action '%s' for state '%s'" % ("reset", self.state))
+			raise Exception("Illegal action '{}' for state '{}'".format("reset", self.state))
 
 		self._reset()
 
 		# FIXME update component state in the database
 		self.state = runstates.READY
 
-		self._log.info("Case {} reset".format(self.name))
+		self._log.info("[{}] Case reset".format(self.name))
 
 	def reload(self):
-		self._log.info("Case {} reloaded".format(self.name))
+		self._log.info("[{}] Case reloaded".format(self.name))
 
 		raise Exception("Unimplemented")
 
