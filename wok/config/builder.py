@@ -2,6 +2,7 @@ import os.path
 import json
 
 from data import Data
+from loader import ConfigLoader
 
 class ConfigMerge(object):
 	def __init__(self, element):
@@ -14,52 +15,31 @@ class ConfigMerge(object):
 		return "[{:8s}] {}".format("Merge", repr(self.element))
 
 class ConfigValue(object):
-	def __init__(self, key, value):
+	def __init__(self, key, value, merge=False):
 		self.key = key
 		self.value = value
+		self._merge = merge
 
 	def merge_into(self, conf):
 		try:
 			v = json.loads(self.value)
 		except:
 			v = self.value
-		conf[self.key] = Data.create(v)
-
-	def __repr__(self):
-		return "[{:8s}] {} = {}".format("Value", self.key, self.value)
-
-class ConfigElement(object):
-	def __init__(self, key, value):
-		self.key = key
-		self.value = value
-
-	def merge_into(self, conf):
-		if self.key in conf:
+		if self._merge and self.key in conf and Data.is_element(conf[self.key]):
 			conf[self.key].merge(self.value)
 		else:
-			conf[self.key] = self.value
+			conf[self.key] = Data.create(v)
 
 	def __repr__(self):
-		return "[{:8s}] {} = {}".format("Element", self.key, repr(self.value))
+		return "[{:8s}] {} = {}{}".format("Value", self.key, self.value, " (merge)" if self._merge else "")
 
 class ConfigFile(object):
 	def __init__(self, path):
 		self.path = os.path.abspath(path)
 
 	def merge_into(self, conf):
-		conf.merge(self.load())
-
-	def load(self):
-		try:
-			with open(self.path, "r") as f:
-				v = json.load(f)
-			return Data.create(v)
-		except Exception as e:
-			from wok import logger
-			msg = ["Error loading configuration from ",
-					self.path, ":\n\n", str(e), "\n"]
-			logger.get_logger("wok.config").error("".join(msg))
-			raise
+		loader = ConfigLoader(self.path)
+		conf.merge(loader.load())
 
 	def __repr__(self):
 		return "[{:8s}] {}".format("File", self.path)
@@ -74,11 +54,8 @@ class ConfigBuilder(object):
 	def add_merge(self, element):
 		self.__parts += [ConfigMerge(element)]
 
-	def add_value(self, key, value):
-		self.__parts += [ConfigValue(key, value)]
-
-	def add_element(self, key, value):
-		self.__parts += [ConfigElement(key, value)]
+	def add_value(self, key, value, merge=True):
+		self.__parts += [ConfigValue(key, value, merge)]
 
 	def add_file(self, path):
 		self.__parts += [ConfigFile(path)]

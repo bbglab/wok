@@ -26,7 +26,7 @@ import signal
 
 from wok import logger
 from wok.config.data import Data
-from wok.config.cli import OptionsConfig
+from wok.config.optionsconfig import OptionsConfig
 from wok.data import data_provider_factory, Stream
 from wok.storage import storage_factory
 from wok.data.portref import PortDataRef, PORT_MODE_IN, PORT_MODE_OUT

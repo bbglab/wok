@@ -165,6 +165,11 @@ def expand(key, value, context, path=None):
 		start = m.start()
 		end = m.end()
 
+		if start != 0 and value[start - 1] == "$":
+			res += [value[start:end]]
+			last = end
+			continue
+
 		res += [value[last:start]]
 		
 		if name not in path:

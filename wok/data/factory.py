@@ -7,7 +7,7 @@ _class_list = [FilesProvider]
 
 def __log(msg, level=None):
 	from wok.logger import get_logger
-	log = get_logger(name="wok.data")
+	log = get_logger("wok.data")
 
 	if level is None:
 		import logging

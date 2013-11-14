@@ -3,7 +3,7 @@ import re
 import json
 
 from wok import logger as woklogger
-from wok.config.builder import ConfigFile
+from wok.config.loader import ConfigLoader
 from wok.config.data import Data
 from wok.core import rtconf
 from wok.core.flow.loader import FlowLoader
@@ -44,8 +44,7 @@ class ConfRule(object):
 					self.merge = os.path.join(base_path, self.merge)
 			if not os.path.isfile(self.merge):
 				raise Exception("Configuration rule merge path not found: {}".format(self.merge))
-			with open(self.merge, "r") as f:
-				self.merge = Data.create(json.load(f))
+			self.merge = ConfigLoader(os.path.join(base_path or "", self.merge)).load()
 		if self.merge is not None and not Data.is_element(self.merge):
 			raise Exception("Expected a dictionary for merge operation of rule: {}".format(repr(rule)))
 
@@ -92,24 +91,32 @@ class Project(object):
 		platform = desc.get("platform")
 
 		self.path = desc.get("path")
+
 		self.conf = desc.get("conf", default=Data.element)
-		self.conf_rules = [ConfRule(rule, base_path, platform) for rule in desc.get("conf_rules", default=Data.list)]
+		if isinstance(self.conf, basestring):
+			self.conf = ConfigLoader(os.path.join(base_path or "", self.conf)).load()
+
+		self.conf_rules = []
+		if self.path is not None:
+			self.conf_rules += [ConfRule(dict(set=[[rtconf.PROJECT_PATH, self.path]]), base_path, platform)]
+		self.conf_rules += [ConfRule(rule, base_path, platform) for rule in desc.get("conf_rules", default=Data.list)]
+
 		self.flows = desc.get("flows", default=Data.list)
 
-	def merge(self, desc, base_path=None):
-		platform = desc.get("platform")
+	def extend(self, pdesc, base_path=None):
+		platform = pdesc.get("platform")
 
-		if platform is not None and "path" in desc:
-			self.conf_rules += [ConfRule(dict(set=[["wok.project.path", desc["path"]]]), base_path, platform)]
+		if platform is not None and "path" in pdesc:
+			self.conf_rules += [ConfRule(dict(set=[[rtconf.PROJECT_PATH, pdesc["path"]]]), base_path, platform)]
 
-		if "conf" in desc:
+		if "conf" in pdesc:
 			if platform is None:
-				self.conf.merge(desc["conf"])
+				self.conf.merge(pdesc["conf"])
 			else:
-				self.conf_rules += [ConfRule(dict(merge=desc["conf"]), base_path, platform)]
+				self.conf_rules += [ConfRule(dict(merge=pdesc["conf"]), base_path, platform)]
 
-		self.conf_rules += [ConfRule(rule, base_path, platform) for rule in desc.get("conf_rules", default=Data.list)]
-		self.flows += desc.get("flows", default=Data.list)
+		self.conf_rules += [ConfRule(rule, base_path, platform) for rule in pdesc.get("conf_rules", default=Data.list)]
+		self.flows += pdesc.get("flows", default=Data.list)
 
 	def initialize(self):
 		self._log.info("Initializing project {} ...".format(self.name))
@@ -117,7 +124,7 @@ class Project(object):
 		if self.path is None:
 			raise Exception("Project 'path' not defined: {}".format(self.name))
 
-		flow_paths = [os.path.join(self.path, flow) if not os.path.isabs(flow) else flow for flow in self.flows]
+		flow_paths = [os.path.join(self.path, flow) for flow in self.flows]
 
 		self._flow_loader = FlowLoader(flow_paths)
 
@@ -141,6 +148,9 @@ class Project(object):
 			pname = conf.get(rtconf.PLATFORM_TARGET, platform_name)
 			if rule.match(task_name=task_name, platform=pname):
 				rule.apply(conf)
+
+		if rtconf.PROJECT_PATH not in conf:
+			conf[rtconf.PROJECT_PATH] = self.path
 
 		return conf
 
@@ -214,13 +224,29 @@ class ProjectManager(object):
 			raise Exception("Project configuration not found: {}".format(path))
 
 		project = Data.element()
-		cfg = ConfigFile(path)
-		cfg.merge_into(project)
+		project.merge(ConfigLoader(path).load())
+
+		base_path = os.path.dirname(path)
+
 		if "path" not in project:
-			project["path"] = os.path.dirname(path)
+			project["path"] = base_path
 
 		if not os.path.isabs(project["path"]):
-			project["path"] = os.path.normpath(os.path.join(os.path.dirname(path), project["path"]))
+			project["path"] = os.path.normpath(os.path.join(base_path, project["path"]))
+
+		if "conf" in project and isinstance(project["conf"], basestring):
+			conf_path = os.path.join(base_path, project["conf"])
+			project["conf"] = ConfigLoader(conf_path).load()
+
+		if "conf_rules" in project and isinstance(project["conf_rules"], bsestring):
+			base_path = os.path.dirname(path)
+			conf_path = os.path.join(base_path, project["conf_rules"])
+			project["conf_rules"] = ConfigLoader(conf_path).load()
+
+		if "conf_rules" in project and Data.is_list(project["conf_rules"]):
+			for rule in project["conf_rules"]:
+				if Data.is_element(rule) and "merge" in rule and isinstance(rule["merge"], basestring):
+					conf_path = os.path.join(base_path, project["conf_rules"])
 
 		return project
 
@@ -240,7 +266,7 @@ class ProjectManager(object):
 
 			self._projects[project_name] = Project(pdesc, name=project_name, base_path=base_path)
 		else:
-			self._projects[project_name].merge(pdesc, base_path=base_path)
+			self._projects[project_name].extend(pdesc, base_path=base_path)
 
 	def load_flow(self, uri):
 		m = self.FLOW_URI_RE.match(uri)
@@ -254,6 +280,9 @@ class ProjectManager(object):
 			raise Exception("Project not found: {}".format(project_name))
 
 		return project.load_flow(flow_name, version=version)
+
+	def project(self, name):
+		return self._projects.get(name)
 
 	def project_conf(self, project_name, platform_name=None):
 		if project_name not in self._projects:

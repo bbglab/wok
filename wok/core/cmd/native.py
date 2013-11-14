@@ -79,14 +79,14 @@ class NativeCommmandBuilder(CommmandBuilder):
 			sources = Data.list([sources])
 
 		for source in sources:
-			script += ["source {}".format(source)]
+			script += ['source "{}"'.format(source)]
 	
 		if lang == "python":
 			virtualenv = task.conf.get(rtconf.TASK_PYTHON_VIRTUALENV)
 			if virtualenv is not None:
 				#script += ["set -x"]
 				#script += ["echo Activating virtualenv {} ...".format(virtualenv)]
-				script += ["source '{}'".format(os.path.join(virtualenv, "bin", "activate"))]
+				script += ['source "{}"'.format(os.path.join(virtualenv, "bin", "activate"))]
 				#script += ["set +x"]
 
 			#script += ["echo Running workitem ..."]

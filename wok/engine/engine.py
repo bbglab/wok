@@ -33,11 +33,12 @@ from blinker import Signal
 
 from wok import logger
 from wok.config.data import Data
-from wok.config.builder import ConfigFile
+from wok.config.loader import ConfigLoader
 from wok.core import runstates
 from wok.core import events
 from wok.core import errors
 from wok.core.utils.sync import Synchronizable, synchronized
+from wok.core.utils.atomic import AtomicCounter
 from wok.core.utils.logsdb import LogsDb
 from wok.core.utils.proctitle import set_thread_title
 from wok.engine.projects import ProjectManager
@@ -63,7 +64,7 @@ class WokEngine(Synchronizable):
 
 		self._expanded_global_conf = conf.clone().expand_vars()
 
-		self._conf = self._expanded_global_conf["wok"]
+		self._conf = self._expanded_global_conf.get("wok", default=Data.element)
 
 		self._conf_base_path = conf_base_path
 
@@ -73,8 +74,6 @@ class WokEngine(Synchronizable):
 		if not os.path.exists(self._work_path):
 			os.makedirs(self._work_path)
 
-		self._num_log_threads = self._conf.get("num_log_threads", cpu_count())
-
 		self._cases = []
 		self._cases_by_name = {}
 
@@ -82,7 +81,7 @@ class WokEngine(Synchronizable):
 
 		#self._lock = Lock()
 		self._cvar = threading.Condition(self._lock)
-		
+
 		self._run_thread = None
 		self._running = False
 
@@ -95,6 +94,12 @@ class WokEngine(Synchronizable):
 
 		self._join_thread = None
 		self._join_queue = Queue()
+
+		self._num_log_threads = self._conf.get("num_log_threads", cpu_count())
+		self._max_alive_threads = 2 + self._num_log_threads
+		self._num_alive_threads = AtomicCounter()
+		
+		self._started = False
 
 		self._notified = False
 
@@ -122,7 +127,8 @@ class WokEngine(Synchronizable):
 
 		if conf_base_path is None:
 			conf_base_path = os.getcwd()
-		self._projects = ProjectManager(self._global_conf.get("wok.projects"), base_path=conf_base_path)
+		projects = self._global_conf.get("wok.projects")
+		self._projects = ProjectManager(projects, base_path=conf_base_path)
 		self._projects.initialize()
 
 		# signals
@@ -160,7 +166,7 @@ class WokEngine(Synchronizable):
 			if isinstance(platform_conf, basestring):
 				if not os.path.isabs(platform_conf) and self._conf_base_path is not None:
 					platform_conf = os.path.join(self._conf_base_path, platform_conf)
-				platform_conf = ConfigFile(platform_conf).load()
+				platform_conf = ConfigLoader(platform_conf).load()
 
 			if not Data.is_element(platform_conf):
 				raise errors.ConfigTypeError("wok.platforms[{}]".format(pidx, platform_conf))
@@ -294,6 +300,8 @@ class WokEngine(Synchronizable):
 		num_exc = 0
 
 		self._running = True
+
+		self._num_alive_threads += 1
 
 		# Start the logs threads
 
@@ -483,11 +491,14 @@ class WokEngine(Synchronizable):
 			_log.exception(ex)
 		
 		self._running = False
+		self._num_alive_threads -= 1
 
 	def _logs(self, index):
 		"Log retrieval thread"
 
 		set_thread_title()
+
+		self._num_alive_threads += 1
 
 		_log = logger.get_logger("wok.engine.logs-{}".format(index))
 		
@@ -554,12 +565,16 @@ class WokEngine(Synchronizable):
 				session.commit()
 				session.close()
 
+		self._num_alive_threads -= 1
+
 		_log.debug("Engine logs thread finished")
 
 	def _join(self):
 		"Joiner thread"
 
 		set_thread_title()
+
+		self._num_alive_threads += 1
 
 		_log = logger.get_logger("wok.engine.join")
 
@@ -657,6 +672,8 @@ class WokEngine(Synchronizable):
 				from traceback import format_exc
 				_log.debug(format_exc())
 
+		self._num_alive_threads -= 1
+
 		_log.debug("Engine join thread finished")
 
 	# API -----------------------------------
@@ -705,25 +722,25 @@ class WokEngine(Synchronizable):
 		self._run_thread.start()
 
 		self._lock.release()
-
 		try:
-			# FIXME self._running is not enough to detect that all threads are running
-			while not self._running:
-				time.sleep(1)
+			try:
+				self._num_alive_threads.wait_condition(lambda value: value < self._max_alive_threads)
 
-			self._log.info("Engine started")
-		except KeyboardInterrupt:
-			wait = False
-			self._log.warn("Ctrl-C pressed ...")
-		except Exception as e:
-			wait = False
-			self._log.error("Exception while waiting for the engine to start")
-			self._log.exception(e)
+				self._started = True
 
-		if wait:
-			self.wait()
+				self._log.info("Engine started")
+			except KeyboardInterrupt:
+				wait = False
+				self._log.warn("Ctrl-C pressed ...")
+			except Exception as e:
+				wait = False
+				self._log.error("Exception while waiting for the engine to start")
+				self._log.exception(e)
 
-		self._lock.acquire()
+			if wait:
+				self.wait()
+		finally:
+			self._lock.acquire()
 
 	def wait(self):
 		self._log.info("Waiting for the engine to finish ...")
@@ -775,16 +792,21 @@ class WokEngine(Synchronizable):
 		self._finished_event.set()
 
 		self._lock.release()
+		try:
+			if self._run_thread is not None:
+				self._stop_threads()
 
-		if self._run_thread is not None:
-			self._stop_threads()
+			for platform in self._platforms:
+				platform.close()
+		finally:
+			self._lock.acquire()
 
-		for platform in self._platforms:
-			platform.close()
-
-		self._lock.acquire()
+		self._started = False
 
 		self._log.info("Engine stopped")
+
+	def running(self):
+		return self._started
 
 	def notify(self, lock=True):
 		if lock:

@@ -117,7 +117,7 @@ class OptionsConfig(DataElement):
 
 		# Projects
 
-		self.builder.add_element("wok.projects", self.options.projects)
+		self.builder.add_value("wok.projects", self.options.projects, merge=True)
 
 		# Build configuration
 
