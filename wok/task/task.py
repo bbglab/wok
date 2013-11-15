@@ -251,7 +251,7 @@ class Task(object):
 
 		## Execute after main
 		if self._end:
-			self.logger.debug("Processing [end] ...")
+			self.logger.debug("Running [end] ...")
 			self._end()
 
 		return 0

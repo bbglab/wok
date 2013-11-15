@@ -139,7 +139,7 @@ class WokServer(object):
 
 		env_args = os.environ.get(args_var)
 		if env_args is not None:
-			env_args = env_args.split(" ")
+			env_args = env_args.strip().split(" ")
 
 		wok_conf_args = app.config.get(args_var, env_args)
 		if wok_conf_args is not None:

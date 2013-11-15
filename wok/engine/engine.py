@@ -98,7 +98,7 @@ class WokEngine(Synchronizable):
 		self._num_log_threads = self._conf.get("num_log_threads", cpu_count())
 		self._max_alive_threads = 2 + self._num_log_threads
 		self._num_alive_threads = AtomicCounter()
-		
+
 		self._started = False
 
 		self._notified = False
