@@ -238,7 +238,7 @@ class ProjectManager(object):
 			conf_path = os.path.join(base_path, project["conf"])
 			project["conf"] = ConfigLoader(conf_path).load()
 
-		if "conf_rules" in project and isinstance(project["conf_rules"], bsestring):
+		if "conf_rules" in project and isinstance(project["conf_rules"], basestring):
 			base_path = os.path.dirname(path)
 			conf_path = os.path.join(base_path, project["conf_rules"])
 			project["conf_rules"] = ConfigLoader(conf_path).load()
@@ -246,7 +246,7 @@ class ProjectManager(object):
 		if "conf_rules" in project and Data.is_list(project["conf_rules"]):
 			for rule in project["conf_rules"]:
 				if Data.is_element(rule) and "merge" in rule and isinstance(rule["merge"], basestring):
-					conf_path = os.path.join(base_path, project["conf_rules"])
+					rule["merge"] = ConfigLoader(os.path.join(base_path, rule["merge"])).load()
 
 		return project
 

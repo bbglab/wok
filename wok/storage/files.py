@@ -176,6 +176,8 @@ class FilesStorageObject(StorageObject):
 	def __init__(self, container, name, **metadata):
 		super(FilesStorageObject, self).__init__(container, name, **metadata)
 
+		name = os.path.normpath(name.replace("..", "__"))
+
 		self._path = os.path.join(container.path, name)
 
 		if os.path.exists(self._path) and not os.path.isfile(self._path):

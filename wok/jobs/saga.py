@@ -176,6 +176,8 @@ class SagaJobManager(JobManager):
 		url = self._conf.get("service_url", "fork://localhost", dtype=str)
 		self._job_service = saga.job.Service(url, session=self._session)
 
+		self._remote_dir = saga.filesystem.Directory(self._file_url, session=self._session)
+
 		# FIXME Use the logging configuration mechanisms of SAGA
 		from wok import logger
 		logger.init_logger("SGEJobService", conf=Data.element(dict(level=self._conf.get("saga_log.level", "error"))))
@@ -248,9 +250,7 @@ class SagaJobManager(JobManager):
 				# remove previous output file
 				try:
 					self._log.debug("Removing remote output for [{}] {} ...".format(job.id, job.name))
-					remote_path = "{}{}".format(self._file_url, jd.output)
-					ofile = saga.filesystem.File(remote_path, session=self._session)
-					ofile.remove()
+					self._remote_dir.remove(jd.output)
 				except saga.DoesNotExist:
 					pass
 				except Exception as ex:
@@ -367,21 +367,18 @@ class SagaJobManager(JobManager):
 
 	def _output(self, job):
 
-		remote_url = "{}{}".format(self._file_url, job.output)
-
 		local_path = os.path.join(self._output_path, job.case_name)
 		if not os.path.exists(local_path):
 			os.makedirs(local_path)
 		local_path = os.path.join(local_path, os.path.basename(job.output))
 		local_url = "file://{}".format(local_path)
 
-		#self._log.error("\n[remote] {}\n[local ] {}".format(remote_path, local_path))
+		#self._log.error("\n[remote] {}\n[local ] {}".format(job.output, local_path))
 
 		try:
 			self._lock.release()
 			#self._log.debug("Retrieving task output ...\n  From: {}\n  To  : {}".format(remote_url, local_path))
-			ofile = saga.filesystem.File(remote_url, session=self._session)
-			ofile.copy(local_url)
+			self._remote_dir.copy(job.output, local_url)
 			return open(local_path)
 		except Exception as ex:
 			self._log.error(str(ex))

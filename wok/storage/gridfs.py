@@ -134,6 +134,7 @@ class GridFsContainer(StorageContainer):
 
 		listed = set()
 		for name in self._gridfs.list():
+			#print ">>>", prefix, name
 			if prefix is not None:
 				if not name.startswith(prefix):
 					continue
@@ -167,7 +168,7 @@ class GridFsObject(StorageObject):
 		if isinstance(src, basestring):
 			src_timestamp = os.path.getmtime(src)
 			self._metadata["__timestamp__"] = src_timestamp
-			src_filename = src
+			self._metadata["__filename__"] = src_filename = src
 			src = open(src, "r")
 			close_src = True
 		else:
@@ -182,15 +183,17 @@ class GridFsObject(StorageObject):
 
 			if check_timestamp:
 				obj = self._gridfs.get(self._name)
-				dst_timestamp = obj.metadata.get("__timestamp__") if obj.metadata is not None else None
-				dst_filename = obj.filename
+				metadata = obj.metadata or {}
+				dst_timestamp = metadata.get("__timestamp__")
+				#dst_filename = obj.filename
+				dst_filename = metadata.get("__filename__")
 				update = src_filename is None or dst_filename is None or src_timestamp is None or dst_timestamp is None\
 							or src_filename != dst_filename or src_timestamp != dst_timestamp
 
 		if update:
 			self._gridfs.delete(self._name)
 
-			dest = self._gridfs.new_file(_id=self._name, filename=src_filename, metadata=self._metadata)
+			dest = self._gridfs.new_file(_id=self._name, filename=self._name, metadata=self._metadata)
 
 			buf = src.read(self._BUF_SIZE)
 			while len(buf) > 0:
