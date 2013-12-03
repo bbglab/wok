@@ -309,8 +309,16 @@ class FilesStorageObject(StorageObject):
 
 		try:
 			os.remove(self._path)
-			dirname = os.path.dirname(self._path)
-			if len(os.listdir(dirname)) == 0:
-				os.rmdir(dirname)
 		except:
+			pass
+		try:
+			os.remove("{}.__metadata__".format(self._path))
+		except:
+			pass
+		try:
+			dirname = os.path.dirname(self._path)
+			while len(os.listdir(dirname)) == 0:
+				os.rmdir(dirname)
+				dirname = os.path.dirname(dirname)
+		except Exception as ex:
 			pass

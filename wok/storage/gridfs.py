@@ -134,7 +134,6 @@ class GridFsContainer(StorageContainer):
 
 		listed = set()
 		for name in self._gridfs.list():
-			#print ">>>", prefix, name
 			if prefix is not None:
 				if not name.startswith(prefix):
 					continue
