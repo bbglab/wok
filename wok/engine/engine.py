@@ -127,8 +127,8 @@ class WokEngine(Synchronizable):
 
 		if conf_base_path is None:
 			conf_base_path = os.getcwd()
-		projects = self._global_conf.get("wok.projects")
-		self._projects = ProjectManager(projects, base_path=conf_base_path)
+		projects_conf = self._global_conf.get("wok.projects")
+		self._projects = ProjectManager(projects_conf, base_path=conf_base_path)
 		self._projects.initialize()
 
 		# signals
@@ -320,11 +320,12 @@ class WokEngine(Synchronizable):
 		_log.debug("Engine run thread ready")
 
 		while self._running:
+
+			session = db.Session()
+
 			try:
 				#_log.debug("Scheduling new tasks ...")
 				set_thread_title("scheduling")
-
-				session = db.Session()
 
 				updated_tasks = set()
 
@@ -346,6 +347,7 @@ class WokEngine(Synchronizable):
 						updated_tasks.add(js.task)
 
 				session.close()
+				session = None
 
 				#_log.debug("Waiting for events ...")
 
@@ -355,10 +357,10 @@ class WokEngine(Synchronizable):
 					self._cvar.wait(1)
 				self._notified = False
 
+				session = db.Session() # there is a session.close() in the finished block
+
 				if not self._running:
 					break
-
-				session = db.Session()
 
 				#_log.debug("Stopping jobs for aborting instances ...")
 
@@ -463,16 +465,20 @@ class WokEngine(Synchronizable):
 
 					self._log.info("".join(sb))
 
-				session.close()
-
 			except BaseException as ex:
 				num_exc += 1
 				_log.info("Exception in run thread ({}): {}".format(num_exc, str(ex)))
-				if num_exc > 3:
-					raise
-				else:
-					from traceback import format_exc
-					_log.debug(format_exc())
+				#if num_exc > 3:
+				#	raise
+				#else:
+				from traceback import format_exc
+				_log.debug(format_exc())
+
+				if session is not None:
+					session.rollback()
+
+			finally:
+				session.close()
 
 		set_thread_title("finishing")
 

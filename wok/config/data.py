@@ -411,7 +411,7 @@ class DataElement(Data):
 			if isinstance(obj, dict):
 				self._merge_dict(self._data, obj)
 			elif isinstance(obj, Data) and self.is_element(obj):
-				self._merge_dict(self._data, obj.data)
+				self._merge_dict(self._data, obj._data)
 
 		self._merge_dict(self._data, kwargs)
 

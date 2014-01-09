@@ -13,7 +13,7 @@ Base = declarative_base()
 Session = scoped_session(sessionmaker())
 
 def create_engine(uri, drop_tables=False):
-	engine = sqlalchemy.create_engine(uri, connect_args=dict(timeout=1800, check_same_thread=False))
+	engine = sqlalchemy.create_engine(uri, connect_args=dict(timeout=18000, check_same_thread=False))
 	Session.configure(bind=engine)
 	if drop_tables:
 		Base.metadata.drop_all(engine)

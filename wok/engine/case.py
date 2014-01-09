@@ -176,11 +176,17 @@ class Case(object):
 		return c
 
 	def remove(self, session):
+		self._log.debug("Removing case state from the database ...")
 		cmps = session.query(db.Component.id).filter(db.Component.case_id == self.id).subquery()
+		self._log.debug("  -> tasks ...")
 		session.query(db.Task).filter(db.Task.id.in_(cmps)).delete(synchronize_session='fetch')
+		self._log.debug("  -> blocks ...")
 		session.query(db.Block).filter(db.Block.id.in_(cmps)).delete(synchronize_session='fetch')
+		self._log.debug("  -> components ...")
 		session.query(db.Component).filter(db.Component.case_id == self.id).delete()
+		self._log.debug("  -> workitems ...")
 		session.query(db.WorkItem).filter(db.WorkItem.case_id == self.id).delete()
+		self._log.debug("  -> case ...")
 		session.query(db.Case).filter(db.Case.id == self.id).delete()
 
 	@property

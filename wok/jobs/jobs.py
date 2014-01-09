@@ -213,15 +213,17 @@ class JobManager(object):
 		with self._lock:
 			session = self._create_session()
 
+			abortable_states = {
+					runstates.WAITING : runstates.ABORTED,
+					runstates.RUNNING : runstates.ABORTING }
+
 			for job_id in job_ids:
 				job = session.query(self.job_class).filter(self.job_class.id == job_id).first()
 
-				if job is None:
+				if job is None or job.state not in abortable_states:
 					continue
 
-				job.state = {
-					runstates.WAITING : runstates.ABORTED,
-					runstates.RUNNING : runstates.ABORTING}[job.state]
+				job.state = abortable_states[job.state]
 
 				self._log.debug("{} job [{}] {} ...".format(job.state.title.capitalize(), job.id, job.name))
 
