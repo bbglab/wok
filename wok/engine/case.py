@@ -45,11 +45,13 @@ class Case(object):
 
 	_INDENT = "  "
 
-	def __init__(self, name, conf_builder, project, flow, engine):
+	def __init__(self, name, conf_builder, project, flow, container_name, engine):
 		self.name = name
 		self.conf_builder = conf_builder
 		self.project = project
 		self.root_flow = flow
+		self.container_name = container_name
+
 		self.engine = engine
 
 		self.title = flow.title
@@ -118,6 +120,7 @@ class Case(object):
 			created=self.created,
 			project=self.project.name,
 			flow=self.root_flow.name,
+			storage=self.container_name,
 			conf=self.conf,
 			state=self._state)
 
@@ -1116,7 +1119,7 @@ class Case(object):
 
 	@property
 	def storages(self):
-		return [platform.storage.get_container(self.name) for platform in self.platforms]
+		return [platform.storage.get_container(self.container_name) for platform in self.platforms]
 
 	#TODO
 	"""

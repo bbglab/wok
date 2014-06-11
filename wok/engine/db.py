@@ -50,6 +50,7 @@ class Case(Base):
 	created = Column(DateTime)
 	project = Column(String)
 	flow = Column(String)
+	storage = Column(String)
 	conf = Column(Config)
 	state = Column(RunState)
 	removed = Column(Boolean, default=False)

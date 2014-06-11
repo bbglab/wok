@@ -24,7 +24,7 @@ with open("README.rst", "r") as f:
 	DOC = f.read()
 
 setup(
-    name = 'wok',
+    name = 'bbglab.wok',
     version = VERSION,
     packages = find_packages(),
     scripts = [
@@ -51,6 +51,7 @@ setup(
     license = 'GPL 3.0',
     keywords = 'workflow dataflow analysis parallel',
     url = 'https://bitbucket.org/bbglab/wok',
+	download_url = "https://bitbucket.org/bbglab/wok/get/{}.tar.gz".format(VERSION),
 	long_description = DOC,
 
 	classifiers = [

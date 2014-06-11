@@ -357,10 +357,10 @@ class WokEngine(Synchronizable):
 					self._cvar.wait(1)
 				self._notified = False
 
-				session = db.Session() # there is a session.close() in the finished block
-
 				if not self._running:
 					break
+
+				session = db.Session() # there is a session.close() in the finished block
 
 				#_log.debug("Stopping jobs for aborting instances ...")
 
@@ -467,18 +467,25 @@ class WokEngine(Synchronizable):
 
 			except BaseException as ex:
 				num_exc += 1
-				_log.info("Exception in run thread ({}): {}".format(num_exc, str(ex)))
+				_log.warn("Exception in run thread ({}): {}".format(num_exc, str(ex)))
 				#if num_exc > 3:
 				#	raise
 				#else:
 				from traceback import format_exc
 				_log.debug(format_exc())
 
-				if session is not None:
+				try:
 					session.rollback()
+				except:
+					_log.warn("Session rollback failed")
 
 			finally:
-				session.close()
+				try:
+					session.close()
+				except:
+					_log.warn("Session close failed")
+
+				session = None
 
 		set_thread_title("finishing")
 
@@ -586,6 +593,8 @@ class WokEngine(Synchronizable):
 
 		_log.debug("Engine join thread ready")
 
+		session = None
+
 		num_exc = 0
 
 		while self._running:
@@ -598,18 +607,18 @@ class WokEngine(Synchronizable):
 
 				workitem_id, job_id = job_info
 
-				session = db.Session()
-
-				workitem = session.query(db.WorkItem).filter(db.WorkItem.id == workitem_id).one()
-
-				case = self._cases_by_name[workitem.case.name]
-				task = case.component(workitem.task.cname)
-
-				set_thread_title(task.cname)
-
-				#_log.debug("Joining work-item %s ..." % task.cname)
-
 				with self._lock:
+					session = db.Session()
+
+					workitem = session.query(db.WorkItem).filter(db.WorkItem.id == workitem_id).one()
+
+					case = self._cases_by_name[workitem.case.name]
+					task = case.component(workitem.task.cname)
+
+					set_thread_title(task.cname)
+
+					#_log.debug("Joining work-item %s ..." % task.cname)
+
 					jr = task.platform.jobs.join(job_id)
 
 					wr = Data.element(dict(
@@ -667,16 +676,31 @@ class WokEngine(Synchronizable):
 						else:
 							_log.debug("Still waiting for {} jobs to stop".format(len(job_ids)))
 
-				if case.state in runstates.TERMINAL_STATES and case.num_active_workitems == 0:
-					_log.info("[{}] Case {}. Total time: {}".format(case.name, case.state.title, str(case.elapsed)))
+					if case.state in runstates.TERMINAL_STATES and case.num_active_workitems == 0:
+						_log.info("[{}] Case {}. Total time: {}".format(case.name, case.state.title, str(case.elapsed)))
 
-					self.case_finished.send(case)
+						self._lock.release()
+						try:
+							self.case_finished.send(case)
+						finally:
+							self._lock.acquire()
 
 			except BaseException as ex:
 				num_exc += 1
-				_log.info("Exception in join thread ({}): {}".format(num_exc, str(ex)))
+				_log.warn("Exception in join thread ({}): {}".format(num_exc, str(ex)))
 				from traceback import format_exc
 				_log.debug(format_exc())
+
+				try:
+					session.rollback()
+				except:
+					_log.warn("Session rollback failed")
+
+			finally:
+				try:
+					session.close()
+				except:
+					_log.warn("Session close failed")
 
 		self._num_alive_threads -= 1
 
@@ -841,7 +865,7 @@ class WokEngine(Synchronizable):
 		return name in self._cases_by_name
 
 	@synchronized
-	def create_case(self, case_name, conf_builder, project_name, flow_name):
+	def create_case(self, case_name, conf_builder, project_name, flow_name, container_name):
 		"Creates a new workflow case"
 
 		session = db.Session()
@@ -869,7 +893,7 @@ class WokEngine(Synchronizable):
 					raise
 
 			try:
-				case = Case(case_name, conf_builder, project, flow, engine=self)
+				case = Case(case_name, conf_builder, project, flow, container_name, engine=self)
 
 				self._cases += [case]
 				self._cases_by_name[case_name] = case
@@ -909,10 +933,27 @@ class WokEngine(Synchronizable):
 			dbcase.removed = case.removed = True
 			if case.state not in runstates.TERMINAL_STATES + [runstates.READY]:
 				dbcase.state = case.state = runstates.ABORTING
-			session.commit()
-			session.close()
-			self.notify(lock=False)
-			self._log.debug("Case {} marked for removal".format(case.name))
+
+			num_retries = 3
+			while num_retries > 0:
+				try:
+					session.commit()
+					self.notify(lock=False)
+					self._log.debug("Case {} marked for removal".format(case.name))
+				except BaseException as ex:
+					num_retries -= 1
+					_log.info("Exception in remove_case: {}".format(str(ex)))
+					if num_retries > 0:
+						_log.info("Remaining retries = {}".format(num_retries))
+						import time
+						time.sleep(1)
+					else:
+						from traceback import format_exc
+						_log.debug(format_exc())
+						session.rollback()
+				finally:
+					session.close()
+
 		else:
 			self._log.error("Trying to remove a non existing case: {}".format(name))
 
