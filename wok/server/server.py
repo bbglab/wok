@@ -1,7 +1,7 @@
 import os
-
 from uuid import uuid4
 from threading import Lock
+from argparse import ArgumentParser
 
 from sqlalchemy import inspect
 from blinker import Signal
@@ -17,12 +17,20 @@ from flask.ext.login import LoginManager
 from wok import logger, VERSION
 from wok.config.data import Data
 from wok.config.builder import ConfigBuilder
+from wok.config.arguments import Arguments
 from wok.engine import WokEngine
+from wok.logger import get_logger
 
 import db
+from dbinit import db_init, db_update
 from model import User, Group, Case, USERS_GROUP
 
 import core
+
+def _get_conf_files(conf_path, req_conf_files, conf_files, default_ext):
+	names = [c.strip() for c in conf_files.split(":")] if conf_files is not None else []
+	conf_files = [n if n.endswith(default_ext) else "{}{}".format(n, default_ext) for n in (req_conf_files + names) if len(n) > 0]
+	return [os.path.join(conf_path, n) for n in conf_files]
 
 class WokFlask(Flask):
 	def __init__(self, *args, **kwargs):
@@ -32,14 +40,25 @@ class WokFlask(Flask):
 
 		Flask.__init__(self, *args, **kwargs)
 
+	def load_conf(self, conf_files=None, path_env="WEB_CONF_PATH", files_env="WEB_CONF_FILES", default_ext=".cfg"):
+		logger = get_logger("wok.server", level="info")
+		logger.info("Loading Flask configuration ...")
+		conf_path = os.environ.get(path_env, os.getcwd())
+		conf_files = _get_conf_files(conf_path, conf_files or [], os.environ.get(files_env), default_ext)
+		for cfg_path in conf_files:
+			logger.info("+++ {}".format(cfg_path))
+			self.config.from_pyfile(cfg_path)
+
 
 class WokServer(object):
 
 	# signals
 
+	case_started = Signal()
+	case_finished = Signal()
 	case_removed = Signal()
 
-	def __init__(self, app=None, start_engine=True):
+	def __init__(self, app=None, start_engine=True, **kwargs):
 		self.app = app
 		self._start_engine = start_engine
 
@@ -51,7 +70,7 @@ class WokServer(object):
 		self.logger = logger.get_logger("wok.server", level="info")
 
 		if app is not None:
-			self.init_app(app)
+			self.init_app(app, **kwargs)
 
 	def _generate_secret_key(self):
 		path = os.path.join(self.engine.work_path, "secret_key.bin")
@@ -96,24 +115,49 @@ class WokServer(object):
 
 		app.register_blueprint(core.bp, url_prefix="/core")
 
-	def _init_conf(self, app):
-		cb = ConfigBuilder()
+	def _conf_args(self, **kwargs):
+		args = dict(conf_files=None, path_var="WOK_CONF_PATH", files_var="WOK_CONF_FILES", args_var="WOK_CONF_ARGS")
+		for k, v in kwargs.items():
+			if k in args:
+				args[k] = v
+		return args
 
-		self.logger.info("Checking configuration files from WOK_CONF ...")
+	def _init_conf(self, app, conf_files, path_var, files_var, args_var):
+		self.logger.info("Checking Wok configuration files ...")
 
-		wok_conf = app.config["WOK_CONF"]
-		for path in wok_conf:
+		args = []
+
+		conf_path = app.config.get(path_var, os.environ.get(path_var, os.getcwd()))
+		wok_conf_files = _get_conf_files(conf_path, conf_files or [],
+										 app.config.get(files_var, os.environ.get(files_var)), ".conf")
+		for path in wok_conf_files:
 			if not os.path.exists(path):
 				self.logger.error("--- {} (not found)".format(path))
 				continue
 			self.logger.info("+++ {}".format(path))
-			cb.add_file(path)
+			args += ["-c", path]
 
-		self.logger.info("Loading configuration ...")
+		env_args = os.environ.get(args_var)
+		if env_args is not None:
+			env_args = env_args.strip().split(" ")
 
-		self.conf_builder = cb
-		self.conf = cb.get_conf()
+		wok_conf_args = app.config.get(args_var, env_args)
+		if wok_conf_args is not None:
+			args += wok_conf_args
+			self.logger.debug("Arguments: {}".format(" ".join(wok_conf_args)))
 
+		self.logger.info("Loading Wok configuration ...")
+
+		parser = ArgumentParser()
+		wok_args = Arguments(parser, case_name_args=False, logger=self.logger)
+		wok_args.initialize(parser.parse_args(args))
+
+		self.conf_builder = wok_args.engine_conf_builder
+		self.conf = wok_args.engine_conf.expand_vars()
+
+		self.case_conf_builder = wok_args.case_conf_builder
+		self.case_conf = wok_args.case_conf.expand_vars()
+		
 		# initialize logging according to the configuration
 
 		log = logger.get_logger("")
@@ -130,31 +174,15 @@ class WokServer(object):
 		self.logger.info("Initializing Wok engine ...")
 
 		self.engine = WokEngine(self.conf)
+		self.engine.case_state_changed.connect(self._case_state_changed)
+		self.engine.case_started.connect(self._case_started)
+		self.engine.case_finished.connect(self._case_finished)
 		self.engine.case_removed.connect(self._case_removed)
 
-	'''
-	def init(self, conf, app):
-		self.conf = conf
-		self.app = app
-
-		# FIXME is this really needed ? what about self.engine.work_path ?
-		self._work_path = self.conf.get("wok.work_path", os.path.join(os.getcwd(), "wok-files"))
-		if not os.path.exists(self._work_path):
-			os.makedirs(self._work_path)
-
-		self._init_flask()
-		self._init_engine()
-
-		db_path = os.path.join(self.engine.work_path, "server.db")
-		db.create_engine(uri="sqlite:///{}".format(db_path))
-
-		self._initialized = True
-	'''
-
-	def init_app(self, app):
+	def init_app(self, app, **kwargs):
 		self._init_flask(app)
 
-		self._init_conf(app)
+		self._init_conf(app, **self._conf_args(**kwargs))
 
 		self._init_engine()
 
@@ -164,7 +192,12 @@ class WokServer(object):
 		app.extensions["wok"] = self.engine
 		
 		db_path = os.path.join(self.engine.work_path, "server.db")
-		db.create_engine(uri="sqlite:///{}".format(db_path))
+		new_db = not os.path.exists(db_path)
+		engine = db.create_engine(uri="sqlite:///{}".format(db_path))
+		session = db.Session()
+		db_init(engine, session, new_db)
+		session.commit()
+		session.close()
 
 		self._initialized = True
 
@@ -204,6 +237,9 @@ class WokServer(object):
 			raise Exception("The server can not be run without the app")
 
 		try:
+			if not self.engine.running():
+				self.engine.start(wait=False)
+
 			self.logger.info("Listening on {}:{} ...".format(args.host, args.port))
 
 			app.run(
@@ -260,13 +296,42 @@ class WokServer(object):
 	def get_user_by_email(self, email):
 		return User.query.filter_by(email=email).first()
 
+	# Projects ---------------------------------------------------------------------------------------------------------
+
+	def project_conf(self, *args, **kwargs):
+		return self.engine.projects.project_conf(*args, **kwargs)
+
 	# Cases ------------------------------------------------------------------------------------------------------------
+
+	def _case_state_changed(self, engine_case):
+		session = db.Session()
+		case = session.query(Case).filter(Case.engine_name == engine_case.name).first()
+		if case is not None:
+			case.state = engine_case.state
+			session.commit()
+
+	def _case_started(self, engine_case):
+		session = db.Session()
+		case = session.query(Case).filter(Case.engine_name == engine_case.name).first()
+		if case is not None:
+			case.started = engine_case.started
+			self.case_started.send(case, server=self, logger=self.logger)
+			session.commit()
+
+	def _case_finished(self, engine_case):
+		session = db.Session()
+		case = session.query(Case).filter(Case.engine_name == engine_case.name).first()
+		if case is not None:
+			case.state = engine_case.state
+			case.finished = engine_case.finished
+			self.case_finished.send(case, server=self, logger=self.logger)
+			session.commit()
 
 	def _case_removed(self, engine_case):
 		session = db.Session()
 		case = session.query(Case).filter(Case.engine_name == engine_case.name).first()
 		if case is not None:
-			self.case_removed.send(case)
+			self.case_removed.send(case, server=self, logger=self.logger)
 			session.delete(case)
 			session.commit()
 
@@ -275,11 +340,12 @@ class WokServer(object):
 		exists_in_db = lambda: Case.query.filter(Case.owner_id == user.id, Case.name == case_name).count() > 0
 		return self.engine.exists_case(engine_case_name) or exists_in_db()
 
-	def create_case(self, user, case_name, conf_builder, flow_uri, properties=None, start=True):
+	def create_case(self, user, case_name, conf_builder, project_name, flow_name, properties=None, start=True):
 		case = Case(
 					owner_id=user.id,
 					name=case_name,
-					flow_uri=flow_uri,
+					project_name=project_name,
+					flow_name=flow_name,
 					conf=conf_builder.get_conf(),
 					properties=Data.element(properties))
 
@@ -291,14 +357,14 @@ class WokServer(object):
 		#while self.engine.exists_case(engine_case_name):
 		#	engine_case_name = "{}-{}".format(user.nick, uuid4().hex[-6:])
 
-		engine_case = self.engine.create_case(engine_case_name, conf_builder, flow_uri)
+		engine_case = self.engine.create_case(engine_case_name, conf_builder, project_name, flow_name)
 
 		case.created = engine_case.created
 		case.engine_name = engine_case_name
 		session.commit()
 
-		#TODO if start:
-		#	engine_case.start()
+		if start:
+			engine_case.start()
 
 		return case
 
@@ -327,3 +393,9 @@ class WokServer(object):
 		if user is not None:
 			q = q.filter(Case.owner_id == user.id)
 		return q.all()
+
+	def cases_count(self, user=None):
+		q = Case.query
+		if user is not None:
+			q = q.filter(Case.owner_id == user.id)
+		return q.count()

@@ -52,42 +52,24 @@ DataElement and DataList objects contain nested data that can be interrogated hi
  y = 5
 }
 
-Note: DataElement and DataLists objects can also be obtained by Data.from_native.
+Note: DataElement and DataLists objects can also be obtained by Data.create.
 
->>> data = Data.from_native({"a": "1", "b" : {"c": 2, "d" : [10,20,30] } })
+>>> data = Data.create({"a": "1", "b" : {"c": 2, "d" : [10,20,30] } })
 >>> print data['a']
 1
 
-It is possible to specify a different node separation character (default is '/'). # TODO: is the choice of the key_sep permanent?
 It is also possible to create new elements or to change the values of an item:
 
->>> data = DataElement(key_sep='/')
->>> data["a/b"] = 6
->>> data["f/j/k"] = 8
+>>> data = DataElement()
+>>> data["a.b"] = 6
+>>> data["f.j.k"] = 8
 >>> a_data = data["a"]
 >>> print a_data  #doctest: +NORMALIZE_WHITESPACE
 {
   b = 6
 }
->>> print data["a/b"]
+>>> print data["a.b"]
 6
-
-Note that once defined, the key_sep can not be changed. 
-So, if you try to access to a item using a wrong key separator, you will get an error:
->>> print data["a.b"] #doctest: +IGNORE_EXCEPTION_DETAIL
-Traceback (most recent call last):
-	...
-KeyError: 'a.b'
-
->>> x_data = a_data.element("x")
->>> x_data["y"] = "Hello"
->>> print a_data  #doctest: +NORMALIZE_WHITESPACE
-{
-x = {
-	y = Hello
-  }
-  b = 6
-}
 
 Checking for keys:
 
@@ -154,6 +136,9 @@ import re
 import json
 from copy import deepcopy
 
+class DataError(Exception):
+	pass
+
 _IDENTIFIER_PAT = re.compile("^[a-zA-Z_]+$")
 _LIST_PAT = re.compile("^([a-zA-Z_]+)\[(\d+)\]$")
 
@@ -165,7 +150,7 @@ def _list_ensure_index(l, index):
 	if index >= list_len:
 		l += [None] * (index + 1 - list_len)
 
-_VARPAT = re.compile(r"\$(\{[._a-zA-Z0-9]+\}|[._a-zA-Z0-9]+)")
+_VARPAT = re.compile(r"\$(?:(?:\{([.\[\]_a-zA-Z0-9]+)(?:\|(.+))?\})|([.\[\]_a-zA-Z0-9]+))")
 
 def expand(key, value, context, path=None):
 	if path is None:
@@ -174,20 +159,26 @@ def expand(key, value, context, path=None):
 	res = []
 	last = 0
 	for m in _VARPAT.finditer(value):
-		name = m.group(1)
-		if name[0] == "{":
-			name = name[1:-1]
+		name = m.group(1) or m.group(3)
+		default = m.group(2)
 
 		start = m.start()
 		end = m.end()
+
+		if start != 0 and value[start - 1] == "$":
+			res += [value[start:end]]
+			last = end
+			continue
 
 		res += [value[last:start]]
 		
 		if name not in path:
 			if name in context:
 				expanded_value = expand(name, str(context[name]), context, path.union(set([name])))
+			elif default is not None:
+				expanded_value = default
 			else:
-				raise Exception("Undefined variable '%s' at '%s'" % (name, key))
+				raise DataError("Undefined variable '%s' at '%s'" % (name, key))
 		else:
 			expanded_value = "@{%s}" % name
 
@@ -200,11 +191,11 @@ def expand(key, value, context, path=None):
 
 class DataJsonEncoder(json.JSONEncoder):
 	def default(self, obj):
-		if isinstance(obj, (DataElement, DataList)):
-			return obj.data
+		if isinstance(obj, Data):
+			return obj._data
 
 class KeyPath(object):
-	def __init__(self, path, sep = _DEFAULT_KEY_SEP):
+	def __init__(self, path, sep=_DEFAULT_KEY_SEP):
 		self.sep = sep
 		
 		if isinstance(path, list):
@@ -223,11 +214,11 @@ class KeyPath(object):
 	def __getitem__(self, key):
 		return self.nodes[key]
 		
-	def subpath(self, start, end = None):
+	def subpath(self, start, end=None):
 		if end is None:
-			return KeyPath(self.nodes[start:], sep = self.sep)
+			return KeyPath(self.nodes[start:], sep=self.sep)
 		else:
-			return KeyPath(self.nodes[start:end], sep = self.sep)
+			return KeyPath(self.nodes[start:end], sep=self.sep)
 		
 	def __str__(self):
 		return self.sep.join([str(node) for node in self.nodes])
@@ -259,6 +250,8 @@ class KeyPathNode(object):
 
 class Data(object):
 
+	key_sep = _DEFAULT_KEY_SEP
+
 	@staticmethod
 	def from_json_file(path):
 		f = open(path, "r")
@@ -268,9 +261,9 @@ class Data(object):
 		return e
 
 	@staticmethod
-	def from_xmle(xmle, key_sep=_DEFAULT_KEY_SEP):
+	def from_xmle(xmle):
 		"""
-		Convert a XML string to a DataList object
+		Convert a XML element to a Data object
 
 		#TODO: example
 		"""
@@ -285,36 +278,36 @@ class Data(object):
 				else:
 					tags[e.tag] = [e]
 
-			data = DataElement(key_sep=key_sep)
+			data = self.element()
 			for tag, elist in tags.items():
 				if len(elist) == 1:
-					data[tag] = Data.from_xmle(elist[0], key_sep)
+					data[tag] = self.from_xmle(elist[0])
 				else:
-					l = DataList(key_sep=key_sep)
+					l = self.list()
 					for e in elist:
-						l += [Data.from_xmle(e, key_sep)]
+						l += [self.from_xmle(e)]
 					data[tag] = l
 
 		return data
 
 	@staticmethod
-	def create(data, key_sep=_DEFAULT_KEY_SEP):
+	def create(data):
 		if isinstance(data, list):
-			return Data.list(data, key_sep)
+			return Data.list(data)
 		elif isinstance(data, dict):
-			return Data.element(data, key_sep)
+			return Data.element(data)
 		elif isinstance(data, Data):
 			return data.clone()
 		else:
 			return data
 
 	@staticmethod
-	def element(data=None, key_sep=_DEFAULT_KEY_SEP):
-		return DataElement(data, key_sep=key_sep)
+	def element(*args, **kwargs):
+		return DataElement(*args, **kwargs)
 
 	@staticmethod
-	def list(data=None, key_sep=_DEFAULT_KEY_SEP):
-		return DataList(data, key_sep=key_sep)
+	def list(*args, **kwargs):
+		return DataList(*args, **kwargs)
 
 	@staticmethod
 	def is_element(data):
@@ -324,9 +317,6 @@ class Data(object):
 	def is_list(data):
 		return isinstance(data, DataList)
 
-	def __init__(self, key_sep=_DEFAULT_KEY_SEP):
-		self.key_sep=key_sep
-
 	def _path(self, key):
 		if key is None:
 			raise KeyError("None key")
@@ -334,40 +324,42 @@ class Data(object):
 		if isinstance(key, KeyPath):
 			path = key
 		else:
-			path = KeyPath(key, sep = self.key_sep)
+			path = KeyPath(key, sep=self.key_sep)
 
 		if len(path) == 0:
 			raise KeyError("Empty key")
 
 		return path
 
+	# FIXME redundant with create() or element() and list() ?
 	def _wrap(self, obj):
 		if isinstance(obj, dict):
-			return DataElement(obj, self.key_sep)
+			return DataElement(obj)
 		elif isinstance(obj, list):
-			return DataList(obj, self.key_sep)
+			return DataList(obj)
 		else:
 			return obj
 
-	def _from_list(self, data, lst):
+	def _merge_list(self, data, lst):
 		for e in lst:
 			data += [self._wrap(e)]
 
-	def _from_dict(self, data, dic):
+	def _merge_dict(self, data, dic):
 		for k, v in dic.items():
 			data[k] = self._wrap(v)
-
+	"""
 	def _element(self, data = None):
 		return DataElement(data, key_sep=self.key_sep)
 
 	def _list(self, data = None):
 		return DataList(data, key_sep=self.key_sep)
+	"""
 
 	def clone(self):
 		return deepcopy(self)
 
 	def _repr_level_object(self, sb, level, v):
-		if isinstance(v, DataElement) or isinstance(v, DataList):
+		if hasattr(v, "repr_level"):
 			v.repr_level(sb, level)
 		else:
 			sb += [str(v)]
@@ -380,7 +372,7 @@ class Data(object):
 
 class DataElement(Data):
 	"""
-	A dict-like object, designed to store XML or JSON like objects.
+	A dict-like object, designed to store XML or JSON objects.
 
 	>>> json = {1: 3, 'a': [2, 4]}
 	>>> d = DataElement(json)
@@ -406,26 +398,33 @@ class DataElement(Data):
 	}
 
 	"""
-	def __init__(self, obj=None, key_sep=_DEFAULT_KEY_SEP):
-		Data.__init__(self, key_sep)
+
+	def __init__(self, *args, **kwargs):
+		super(DataElement, self).__init__()
 		
-		self.data = {}
-		if obj is not None:
+		self._data = {}
+
+		for obj in args:
+			if obj is None:
+				continue
+
 			if isinstance(obj, dict):
-				self._from_dict(self.data, obj)
-			elif isinstance(obj, DataElement):
-				self._from_dict(self.data, obj.data)
+				self._merge_dict(self._data, obj)
+			elif isinstance(obj, Data) and self.is_element(obj):
+				self._merge_dict(self._data, obj._data)
+
+		self._merge_dict(self._data, kwargs)
 
 	def keys(self):
-		return self.data.keys()
+		return self._data.keys()
 
 	def __len__(self):
-		return len(self.data)
+		return len(self._data)
 
 	def __getitem__(self, key):
 		path = self._path(key)
 		p0 = path[0]
-		obj = self.data[p0.name]
+		obj = self._data[p0.name]
 		if p0.is_list():
 			obj = obj[p0.index]
 		
@@ -443,26 +442,26 @@ class DataElement(Data):
 		
 		if len(path) == 1:
 			if p0.is_list():
-				if p0.name in self.data:
-					lst = self.data[p0.name]
+				if p0.name in self._data:
+					lst = self._data[p0.name]
 				else:
-					lst = self.data[p0.name] = list()
+					lst = self._data[p0.name] = list()
 				_list_ensure_index(lst, p0.index)
 				lst[p0.index] = value
 			else:
-				self.data[p0.name] = value
+				self._data[p0.name] = value
 		else:
-			if p0.name not in self.data:
+			if p0.name not in self._data:
 				if p0.is_list():
-					self.data[p0.name] = DataList(key_sep=self.key_sep)
+					self._data[p0.name] = self.list()
 				else:
-					self.data[p0.name] = DataElement(key_sep=self.key_sep)
+					self._data[p0.name] = self.element()
 
 			if p0.is_list():
 				#TODO check that self.data[p0.name] is a list
-				self.data[p0.name][path] = value
+				self._data[p0.name][path] = value
 			else:
-				self.data[p0.name][path.subpath(1)] = value
+				self._data[p0.name][path.subpath(1)] = value
 
 	def __delitem__(self, key):
 		path = self._path(key)
@@ -470,44 +469,44 @@ class DataElement(Data):
 		
 		if len(path) == 1:
 			if p0.is_list():
-				lst = self.data[p0.name]
+				lst = self._data[p0.name]
 				_list_ensure_index(lst, p0.index)
 				lst[p0.index] = None
 			else:
-				del self.data[p0.name]
+				del self._data[p0.name]
 		else:
-			obj = self.data[p0.name]
+			obj = self._data[p0.name]
 			del obj[path.subpath(1)]
 	
 	def __iter__(self):
-		return iter(self.data)
+		return iter(self._data)
 
 	def __contains__(self, key):
 		path = self._path(key)
 		p0 = path[0]
-		key_in_data = p0.name in self.data
+		key_in_data = p0.name in self._data
 		
 		if len(path) == 1:
 			if p0.is_list():
-				return key_in_data and p0.index < len(self.data[p0.name])
+				return key_in_data and p0.index < len(self._data[p0.name])
 			else:
 				return key_in_data
 		elif key_in_data:
-			obj = self.data[p0.name]
+			obj = self._data[p0.name]
 			if p0.is_list():
-				key_in_data = isinstance(obj, (DataList, list))
+				key_in_data = isinstance(obj, list) or self.is_list(obj)
 				return key_in_data and path in obj
 			else:
-				key_in_data = isinstance(obj, (DataElement, dict))
+				key_in_data = isinstance(obj, dict) or self.is_element(obj)
 				return key_in_data and path.subpath(1) in obj
 		else:
 			return False
 
 	def items(self):
-		return self.data.items()
+		return self._data.items()
 	
 	def iteritems(self):
-		return self.data.iteritems()
+		return self._data.iteritems()
 
 	def get(self, key, default=None, dtype=None):
 		if not key in self:
@@ -533,31 +532,30 @@ class DataElement(Data):
 			else:
 				return value
 
-	def create_element(self, key = None, data = None):
-		print "WARN: Data.create_element is deprecated in favour of Data.element"
-		return self.element(key, data)
-
-	def element(self, key = None, data = None):
-		e = self._element(data)
+	"""
+	def element(self, key=None, data=None):
+		e = super(DataElement, self).element(data)
 		if key is not None:
 			self[key] = e
 		return e
 
-	def create_list(self, key = None, data = None):
-		print "WARN: Data.create_list is deprecated in favour of Data.list"
-		return self.list(key, data)
-
-	def list(self, key = None, data = None):
+	def list(self, key=None, data=None):
 		l = self._list(data)
 		if key is not None:
 			self[key] = l
 		return l
+	"""
+
+	def delete(self, *keys):
+		for key in keys:
+			if key in self:
+				del self[key]
 
 	def transform(self, nodes):
-		e = DataElement(key_sep=self.key_sep)
+		e = super(DataElement, self).element()
 
 		for ref in nodes:
-			if isinstance(ref, str):
+			if isinstance(ref, basestring):
 				key = path = ref
 			else:
 				key = ref[0]
@@ -568,7 +566,7 @@ class DataElement(Data):
 
 		return e
 
-	def copy_from(self, e, keys = None):
+	def copy_from(self, e, keys=None):
 		if keys is None:
 			keys = e.keys()
 
@@ -578,7 +576,8 @@ class DataElement(Data):
 		return self
 
 	def clone(self):
-		return DataElement().copy_from(self)
+		e = super(DataElement, self).element()
+		return e.copy_from(self)
 
 	def merge(self, e, keys=None):
 		"""
@@ -605,26 +604,32 @@ class DataElement(Data):
 		if e is None:
 			return self
 
-		if not isinstance(e, (DataElement, dict)):
-			raise Exception("A data element cannot merge an element of type %s" % type(e))
+		if not (isinstance(e, dict) or self.is_element(e)):
+			raise DataError("A data element cannot merge an element of type %s" % type(e))
 
 		if keys is None:
 			keys = e.keys()
 
 		for key in keys:
 			ed = e[key]
-			if key not in self.data:
-				self.data[key] = deepcopy(ed)
+			if key not in self._data:
+				self._data[key] = deepcopy(ed)
 			else:
-				d = self.data[key]
+				d = self._data[key]
 				if isinstance(d, Data):
 					d.merge(ed)
 				else:
-					self.data[key] = deepcopy(ed)
+					self._data[key] = deepcopy(ed)
 
 		return self
 
 	def missing_fields(self, keys):
+		from wok.logger import get_logger
+		get_logger(__name__).warn("{0}.missing_fields() is deprecated, "
+								  "use {0}.missing_keys() instead".format(self.__class__.__name__))
+		return self.missing_keys(keys)
+
+	def missing_keys(self, keys):
 		missing = []
 		for key in keys:
 			if key not in self:
@@ -632,9 +637,9 @@ class DataElement(Data):
 		return missing
 
 	def check_keys(self, keys):
-		missing_keys = self.missing_fields(keys)
-		if len(missing_keys) > 0:
-			raise MissingKeys(missing_keys)
+		keys = self.missing_keys(keys)
+		if len(keys) > 0:
+			raise MissingKeys(keys)
 
 	def expand_vars(self, context=None, path=None):
 		if context is None:
@@ -643,18 +648,18 @@ class DataElement(Data):
 		if path is None:
 			path = list()
 
-		for key, data in self.data.iteritems():
+		for key, data in self._data.iteritems():
 			current_path = path + [key]
 			if isinstance(data, Data):
 				data.expand_vars(context, current_path)
 			elif isinstance(data, basestring):
-				self.data[key] = expand(".".join(current_path), data, context)
+				self._data[key] = expand(".".join(current_path), data, context)
 
 		return self
 
 	def to_native(self):
 		native = {}
-		for key, data in self.data.iteritems():
+		for key, data in self._data.iteritems():
 			if isinstance(data, Data):
 				value = data.to_native()
 			else:
@@ -665,10 +670,10 @@ class DataElement(Data):
 	def repr_level(self, sb, level):
 		sb += ["{\n"]
 		level += 1
-		keys = self.data.keys()
+		keys = self._data.keys()
 		keys.sort(reverse = True)
 		for k in keys:
-			v = self.data[k]
+			v = self._data[k]
 			sb += [_INDENT * level]
 			sb += ["%s = " % k]
 			self._repr_level_object(sb, level, v)
@@ -680,32 +685,43 @@ class DataElement(Data):
 		return sb
 
 class DataList(Data):
-	def __init__(self, obj = None, key_sep=_DEFAULT_KEY_SEP):
-		Data.__init__(self, key_sep)
+	def __init__(self, *args):
+		super(DataList, self).__init__()
 
-		self.data = []
-		if obj is not None and isinstance(obj, list):
-			self._from_list(self.data, obj)
+		self._data = []
+
+		if len(args) == 1:
+			obj = args[0]
+		elif len(args) > 1:
+			obj = args
+		else:
+			obj = None
+
+		if obj is not None:
+			if isinstance(obj, list):
+				self._merge_list(self._data, obj)
+			elif self.is_list(obj):
+				self._merge_list(self._data, obj.data)
 
 	def __len__(self):
-		return len(self.data)
+		return len(self._data)
 
 	def __repr__(self):
-		return str(self.data)
+		return "[{}]".format(", ".join([repr(d) for d in self._data]))
 
 	def __getitem__(self, key):
 		if isinstance(key, int):
-			return self.data[key]
+			return self._data[key]
 		else:
 			path = self._path(key)
 			p0 = path[0]
 			if not p0.is_list():
 				raise TypeError("list indices must be integers, not '{}'".format(p0.name))
 
-			if p0.index >= len(self.data):
+			if p0.index >= len(self._data):
 				raise IndexError(p0.index)
 
-			obj = self.data[p0.index]
+			obj = self._data[p0.index]
 			if obj is None:
 				return None
 
@@ -716,7 +732,7 @@ class DataList(Data):
 
 	def __setitem__(self, key, value):
 		if isinstance(key, int):
-			self.data[key] = value
+			self._data[key] = value
 		else:
 			path = self._path(key)
 			p0 = path[0]
@@ -724,45 +740,45 @@ class DataList(Data):
 				raise TypeError("list indices must be integers, not '{}'".format(p0.name))
 
 			self.ensure_index(p0.index)
-			obj = self.data[p0.index]
+			obj = self._data[p0.index]
 			if obj is None:
-				self.data[p0.index] = obj = DataElement(key_sep=self.key_sep)
+				self._data[p0.index] = obj = DataElement(key_sep=self.key_sep)
 
 			obj[key.subpath(1)] = value
 
 	def __delitem__(self, key):
-		del self.data[key]
+		del self._data[key]
 
 	def __iter__(self):
-		return iter(self.data)
+		return iter(self._data)
 
 	def __add__(self, value):
-		if isinstance(value, DataList):
-			return self.data + value.data
+		if self.is_list(value):
+			return self._data + value._data
 		elif isinstance(value, list):
-			return self.data + value
+			return self._data + value
 		else:
 			raise TypeError("DataList or list expected")
 
 	def __iadd__(self, value):
-		if isinstance(value, DataList):
-			self.data += value.data
+		if self.is_list(value):
+			self._data += value._data
 		elif isinstance(value, list):
-			self.data += value
+			self._data += value
 		else:
 			raise TypeError("DataList or list expected")
 		return self
 
 	def append(self, value):
-		self.data.append(value)
+		self._data.append(value)
 
 	def remove(self, value):
-		self.data.remove(value)
+		self._data.remove(value)
 
 	def ensure_index(self, index):
-		list_len = len(self.data)
+		list_len = len(self._data)
 		if index >= list_len:
-			self.data += [None] * (index + 1 - list_len)
+			self._data += [None] * (index + 1 - list_len)
 
 	def merge(self, e):
 		"""
@@ -777,32 +793,32 @@ class DataList(Data):
 		if e is None:
 			return
 
-		if not (isinstance(e, DataList) or isinstance(e, list)):
+		if not (self.is_list(e) or isinstance(e, list)):
 			raise Exception("A data element list cannot merge an element of type %s" % type(e))
 
 		for d in e:
-			self.data += [d]
+			self._data += [d]
 
 		return self
 
-	def expand_vars(self, context, path = None):
+	def expand_vars(self, context, path=None):
 		if path is None:
 			path = list()
 
 		key = ".".join(path)
 
-		for i in xrange(len(self.data)):
-			data = self.data[i]
+		for i in xrange(len(self._data)):
+			data = self._data[i]
 			if isinstance(data, Data):
 				data.expand_vars(context, path + ['[%i]' % i])
-			elif isinstance(data, str) or isinstance(data, unicode):
-				self.data[i] = expand(key, data, context)
+			elif isinstance(data, basestring):
+				self._data[i] = expand(key, data, context)
 
 		return self
 
 	def to_native(self):
 		native = []
-		for data in self.data:
+		for data in self._data:
 			if isinstance(data, Data):
 				value = data.to_native()
 			else:
@@ -813,7 +829,7 @@ class DataList(Data):
 	def repr_level(self, sb, level):
 		sb += ["[\n"]
 		level += 1
-		for e in self.data:
+		for e in self._data:
 			sb += [_INDENT * level]
 			self._repr_level_object(sb, level, e)
 			sb += ["\n"]
@@ -822,9 +838,9 @@ class DataList(Data):
 		sb += ["]"]
 
 class DataValue(Data): # not used
-	def __init__(self, value, key_sep=_DEFAULT_KEY_SEP):
-		Data.__init__(self, key_sep)
-		self.value = value
+	def __init__(self, value):
+		super(DataValue, self).__init__()
+		self._value = value
 
 	def __repr__(self):
-		return str(self.value)
+		return str(self._value)

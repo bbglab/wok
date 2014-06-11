@@ -21,13 +21,13 @@
 #
 ###############################################################################
 
-__version__ = "3.0.0-rc3"
+__version__ = "3.0.0-alpha5"
 
 VERSION = __version__
 
 AUTHORS = u"Christian Pérez-Llamas"
 AUTHORS_EMAIL = u"christian.perez@upf.edu"
 
-COPYRIGHT = u"2009-2013, Universitat Pompeu Fabra"
+COPYRIGHT = u"2009-2014, Universitat Pompeu Fabra"
 
 import config.data as element

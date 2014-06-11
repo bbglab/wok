@@ -5,9 +5,9 @@ from datetime import datetime
 from wok import logger
 from wok.core import runstates
 from wok.core import events
-from wok.core.errors import ConfigMissingError
+from wok.core.errors import MissingConfigParamError
 from wok.core.callback import CallbackManager
-from wok.jobs.db import create_engine, Session, Job, JobResults
+from wok.jobs.db import create_engine, create_session_factory, Job, JobResults
 
 import inspect
 # Class to wrap Lock and simplify logging of lock usage
@@ -63,7 +63,7 @@ class JobManager(object):
 		self._log = logger.get_logger("wok.jobs.{}".format(name))
 
 		if "work_path" not in self._conf:
-			raise ConfigMissingError("work_path")
+			raise MissingConfigParamError("work_path")
 
 		self._work_path = conf["work_path"]
 		if not os.path.exists(self._work_path):
@@ -72,6 +72,7 @@ class JobManager(object):
 		db_path = os.path.join(self._work_path, "jobs.db")
 		# TODO if not in recover_mode then delete jobs.db
 		self._db = create_engine("sqlite:///{}".format(db_path))
+		self._session_factory = create_session_factory(self._db)
 
 		self._callbacks = CallbackManager(valid_events=[events.JOB_UPDATE])
 
@@ -80,7 +81,7 @@ class JobManager(object):
 		#self._lock = LogLock("lock", self._log)
 
 	def _create_session(self):
-		return Session()
+		return self._session_factory()
 
 	@property
 	def callbacks(self):
@@ -212,15 +213,17 @@ class JobManager(object):
 		with self._lock:
 			session = self._create_session()
 
+			abortable_states = {
+					runstates.WAITING : runstates.ABORTED,
+					runstates.RUNNING : runstates.ABORTING }
+
 			for job_id in job_ids:
 				job = session.query(self.job_class).filter(self.job_class.id == job_id).first()
 
-				if job is None:
+				if job is None or job.state not in abortable_states:
 					continue
 
-				job.state = {
-					runstates.WAITING : runstates.ABORTED,
-					runstates.RUNNING : runstates.ABORTING}[job.state]
+				job.state = abortable_states[job.state]
 
 				self._log.debug("{} job [{}] {} ...".format(job.state.title.capitalize(), job.id, job.name))
 
@@ -246,6 +249,6 @@ class JobManager(object):
 
 		session.close()
 
-		Session.remove()
+		self._session_factory.remove()
 
 		self._log.info("Job manager '{}' closed".format(self._name))

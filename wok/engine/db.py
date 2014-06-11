@@ -13,7 +13,7 @@ Base = declarative_base()
 Session = scoped_session(sessionmaker())
 
 def create_engine(uri, drop_tables=False):
-	engine = sqlalchemy.create_engine(uri, connect_args=dict(timeout=1800, check_same_thread=False))
+	engine = sqlalchemy.create_engine(uri, connect_args=dict(timeout=18000, check_same_thread=False))
 	Session.configure(bind=engine)
 	if drop_tables:
 		Base.metadata.drop_all(engine)
@@ -48,13 +48,12 @@ class Case(Base):
 	name = Column(String, unique=True)
 	title = Column(String)
 	created = Column(DateTime)
-	flow_uri = Column(String)
+	project = Column(String)
+	flow = Column(String)
+	storage = Column(String)
 	conf = Column(Config)
 	state = Column(RunState)
 	removed = Column(Boolean, default=False)
-
-	project = Column(String)
-	platform = Column(String)
 
 	components = relationship("Component", backref="case")
 
@@ -108,6 +107,9 @@ class Component(Node, Base):
 
 	state = Column(RunState)
 
+	started = Column(DateTime)
+	finished = Column(DateTime)
+
 	#depends = Column()
 	#waiting = Column()
 	#notify = Column()
@@ -153,11 +155,13 @@ class WorkItem(Base):
 	name = Column(String)
 	cname = Column(String)
 
-	priority = Column(Float)
-
 	index = Column(Integer)
 	state = Column(RunState)
 	substate = Column(RunState)
+
+	priority = Column(Float)
+
+	platform = Column(String)
 
 	partition = Column(Config)
 

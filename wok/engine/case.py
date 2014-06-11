@@ -1,6 +1,6 @@
 ###############################################################################
 #
-#    Copyright 2009-2011, Universitat Pompeu Fabra
+#    Copyright 2009-2013, Universitat Pompeu Fabra
 #
 #    This file is part of Wok.
 #
@@ -20,26 +20,22 @@
 ###############################################################################
 
 import sys
-import os.path
 import math
 import re
-import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from collections import deque
 
 from sqlalchemy import func, distinct
 
 from wok import logger
-from wok.config.builder import ConfigBuilder
 from wok.config.data import Data
-from wok.core import runstates
+from wok.core import runstates, rtconf
 from wok.core.utils.sync import synchronized
 from wok.core.utils.sync import Synchronizable
 from wok.core.utils.proxies import ReadOnlyProxy
-from wok.data import DataProvider
 from wok.data.portref import PortDataRef, MergedPortDataRef
-from wok.engine.nodes import *
 
+from nodes import *
 import db
 
 # 2011-10-06 18:39:46,849 bfast_localalign-0000 INFO  : hello world
@@ -49,67 +45,34 @@ class Case(object):
 
 	_INDENT = "  "
 
-	def __init__(self, name, conf_builder, flow_uri, engine, platform):
+	def __init__(self, name, conf_builder, project, flow, container_name, engine):
 		self.name = name
-		self.title = name
-
-		self.created = datetime.now()
-		
-		self.conf = None
-		self.conf_builder = ConfigBuilder()
-		self.conf_builder.add_value("wok.__case.name", name)
-		self.conf_builder.add_builder(conf_builder)
-
-		self.flow_uri = flow_uri
-		self.root_flow = None
+		self.conf_builder = conf_builder
+		self.project = project
+		self.root_flow = flow
+		self.container_name = container_name
 
 		self.engine = engine
-		self.platform = platform
-		self._project = None
 
-		self._state = runstates.READY
+		self.title = flow.title
+		self.created = datetime.now()
+		self.flow_uri = "{}:{}".format(project.name, flow.name) # FIXME flow.uri
 
-		self.root_node = None
-		
+		self._log = logger.get_logger("wok.case")
+
+		self._initialize_conf()
+
+		# reset state
+		self._state = runstates.PAUSED
+
 		# components by name
 		self._component_by_cname = None
 
-		# tasks in dependency order
-		self._tasks = []
-
-		# Whether this case is marked for removal when all the jobs finish
-		self.removed = False
-
-		self._log = logger.get_logger("wok.case")
-	
-	def initialize(self):
-		self.conf = self.conf_builder.get_conf()
-
-		case_conf = self.conf.get("wok.case", default=Data.element)
-
-		case_conf["name"] = self.name
-		
-		self.title = case_conf.get("title")
-
-		self.root_flow = self.engine.projects.load_flow(self.flow_uri)
-
-		self._project = self.root_flow.project
-
-		# self._log.debug("\n" + repr(self.root_flow))
-
-		case_conf.element("flow", dict(
-			name=self.root_flow.name,
-			uri=self.flow_uri))
-			#path=os.path.dirname(os.path.abspath(self.flow_uri)),
-			#file=os.path.basename(self.flow_uri)))
-
-		self._component_rules = case_conf.get("component_rules", default=Data.element)
-
-		# reset state
-		self._state = runstates.READY
-
 		# create nodes tree
 		self.root_node = self._create_tree(self.root_flow)
+
+		# calculate components configuration
+		self._apply_component_conf()
 
 		# connect ports and create dependencies
 		self._connect_ports_and_create_deps()
@@ -117,22 +80,47 @@ class Case(object):
 		# calculate the list of tasks in dependency order
 		self.tasks = self._tasks_in_dependency_order()
 
+		# list of used platforms
+		self.platforms = self._used_platforms()
+
 		# calculate priorities
 		for node in self.root_node.children:
 			self._calculate_priorities(node)
 
+		# Track the number of active workitems
 		self.num_active_workitems = 0
 
+		# Whether this case is marked for removal when all the jobs finish
+		self.removed = False
+
 		#self._log.debug("Flow node tree:\n" + repr(self.root_node))
+	
+	def _initialize_conf(self):
+		# project defined config
+		self.conf = conf = self.project.get_conf()
+
+		# user defined config
+		self.user_conf = self.conf_builder.get_conf()
+		if "wok" in self.user_conf:
+			self.user_conf.delete("wok.work_path", "wok.projects", "wok.platforms", "wok.logging")
+		conf.merge(self.user_conf)
+
+		# runtime config
+		conf[rtconf.CASE_NAME] = self.name
+		conf[rtconf.FLOW] = Data.element(dict(
+			name=self.root_flow.name,
+			uri=self.flow_uri))
+			#path=os.path.dirname(os.path.abspath(self.flow_uri)),
+			#file=os.path.basename(self.flow_uri)))
 
 	def persist(self, session):
 		case = db.Case(
 			name=self.name,
 			title=self.title,
 			created=self.created,
-			flow_uri=self.flow_uri,
 			project=self.project.name,
-			platform=self.platform.name,
+			flow=self.root_flow.name,
+			storage=self.container_name,
 			conf=self.conf,
 			state=self._state)
 
@@ -165,22 +153,22 @@ class Case(object):
 
 	def __persist_component(self, cls, case, parent, node, **kwargs):
 		c = cls(
-			case=case,
-			parent=parent,
-			ns=node.namespace,
-			name=node.name,
-			cname=node.cname,
-			title=node.model.title,
-			desc=node.model.desc,
-			enabled=node.model.enabled,
-			maxpar=node.model.maxpar,
-			wsize=node.model.wsize,
-			priority=node.priority,
-			priority_factor=node.priority_factor,
-			resources=node.resources,
-			state=node.state,
-			conf=node.conf,
-			**kwargs)
+				case=case,
+				parent=parent,
+				ns=node.namespace,
+				name=node.name,
+				cname=node.cname,
+				title=node.model.title,
+				desc=node.model.desc,
+				enabled=node.model.enabled,
+				maxpar=node.model.maxpar,
+				wsize=node.model.wsize,
+				priority=node.priority,
+				priority_factor=node.priority_factor,
+				resources=node.resources,
+				state=node.state,
+				conf=node.conf,
+				**kwargs)
 
 		#TODO params
 		#c.params = []
@@ -191,16 +179,18 @@ class Case(object):
 		return c
 
 	def remove(self, session):
+		self._log.debug("Removing case state from the database ...")
 		cmps = session.query(db.Component.id).filter(db.Component.case_id == self.id).subquery()
+		self._log.debug("  -> tasks ...")
 		session.query(db.Task).filter(db.Task.id.in_(cmps)).delete(synchronize_session='fetch')
+		self._log.debug("  -> blocks ...")
 		session.query(db.Block).filter(db.Block.id.in_(cmps)).delete(synchronize_session='fetch')
+		self._log.debug("  -> components ...")
 		session.query(db.Component).filter(db.Component.case_id == self.id).delete()
+		self._log.debug("  -> workitems ...")
 		session.query(db.WorkItem).filter(db.WorkItem.case_id == self.id).delete()
+		self._log.debug("  -> case ...")
 		session.query(db.Case).filter(db.Case.id == self.id).delete()
-
-	@property
-	def project(self):
-		return self._project
 
 	@property
 	def state(self):
@@ -250,7 +240,7 @@ class Case(object):
 				comp.set_in_ports(self._create_port_nodes(comp, comp_def.in_ports, ns, mns))
 				comp.set_out_ports(self._create_port_nodes(comp, comp_def.out_ports, ns, mns))
 			else:
-				sub_flow_def = self._project.load_from_ref(comp_def.flow_ref)
+				sub_flow_def = self.project.load_from_ref(comp_def.flow_ref)
 				self._override_component(sub_flow_def, comp_def)
 				comp = self._create_tree(sub_flow_def, parent=flow, namespace=ns)
 				# Import flow ports defined in the module definition
@@ -584,8 +574,8 @@ class Case(object):
 			comps = [[order, comp] for comp, (order, count) in dep_count.items() if count == 0]
 
 		if len(dep_count) > 0:
-			self._log.warn("Some components got excluded from the list of tasks ordered by its dependencies:\n".format(
-				"\n  ".join([(comp.cname, count) for comp, (order, count) in dep_count.items()])))
+			self._log.warn("Some components got excluded from the list of tasks ordered by its dependencies:\n  {}".format(
+				"\n  ".join(sorted([comp.cname for comp in dep_count.keys()]))))
 
 		return tasks
 
@@ -600,6 +590,19 @@ class Case(object):
 				q.extend(comp.children)
 		return tasks
 
+	def _used_platforms(self):
+		default_platform_target = self.engine.default_platform.name
+		platforms = []
+		names = set()
+		for task in self.tasks:
+			platform_target = task.conf.get(rtconf.PLATFORM_TARGET, default_platform_target)
+			platform = self.engine.platform(platform_target)
+			if platform is None:
+				raise Exception("Task '{}' references a platform that does not exists: {}".format(task.cname, platform_target))
+			if platform.name not in names:
+				platforms += [platform]
+				names.add(platform.name)
+		return platforms
 
 	def _calculate_priorities(self, component, parent_priority=0, factor=1.0):
 		if component.model.priority is not None:
@@ -616,39 +619,55 @@ class Case(object):
 			for child in component.children:
 				self._calculate_priorities(child, component.priority, factor)
 
-	def apply_task_rules(self, component, conf):
-		#self._log.debug("Component %s" % (component.cname))
-		
-		for rule in self._component_rules:
-			names = rule["name"]
-			names_are_strings = [isinstance(a, basestring) for a in names]
-			if isinstance(names, basestring):
-				names = [names]
-			elif not Data.is_list(names) \
-					or not reduce(lambda x,y: x and y, names_are_strings):
-				self._log.error("[{}] wok.case.mod_rules[*].name must be a string or a list of strings".format(
-									component.cname))
-				continue
-			m = None
-			for name in names:
-				m = re.match(name, component.cname)
-				if m is not None:
-					break
-			if m is not None:
-				#self._log.debug(">>> %s" % (str(names)))
-				if "maxpar" in rule:
-					component.maxpar = rule.get("maxpar", dtype=int)
-				if "wsize" in rule:
-					component.wsize = rule.get("wsize", dtype=int)
-				if "conf" in rule:
-					for entry in rule["conf"]:
-						component.conf[entry[0]] = entry[1]
+	def _materialize_component_conf(self, component, default_platform_target):
+		conf = component.conf
+
+		component.enabled = conf.get(rtconf.TASK_ENABLED, component.enabled)
+		component.maxpar = conf.get(rtconf.TASK_MAXPAR, component.maxpar)
+		component.wsize = conf.get(rtconf.TASK_WSIZE, component.wsize)
+
+		platform_target = conf.get(rtconf.PLATFORM_TARGET, default_platform_target)
+		if platform_target is not None:
+			component.platform = self.engine.platform(platform_target)
+		else:
+			component.platform = self.engine.default_platform
+
+	def _apply_component_conf(self, component=None):
+		if component is None:
+			component = self.root_node
+
+		default_platform_target = self.engine.default_platform.name
+
+		# apply project configuration
+		conf = self.project.get_conf(task_name=component.cname, platform_name=default_platform_target)
+
+		# apply configuration defined in the workflow model
+		if component.model.conf is not None:
+			conf.merge(component.model.conf)
+
+		# apply user configuration
+
+		#print component.cname, ">>>", conf, ">>>>>>>>>>>>>>>>", self.user_conf
+
+		conf.merge(self.user_conf)
+
+		if rtconf.PROJECT_PATH not in conf:
+			conf[rtconf.PROJECT_PATH] = self.project.path
+
+		component.conf = conf.expand_vars()
+
+		self._materialize_component_conf(component, default_platform_target)
+
+		if not component.is_leaf:
+			for child in component.children:
+				self._apply_component_conf(child)
 
 	def _create_task_data(self, task):
 		"""
 		Prepare the data provider for a new scheduled task.
 		"""
-		provider = self.platform.data
+
+		provider = task.platform.data
 		for port in task.out_ports:
 			provider.remove_port_data(port)
 		provider.save_task(task)
@@ -660,7 +679,7 @@ class Case(object):
 		:return: list of updated modules.
 		"""
 
-		if self.state in runstates.TERMINAL_STATES:
+		if self._state in [runstates.PAUSED] + runstates.TERMINAL_STATES:
 			return []
 
 		updated_components = []
@@ -692,7 +711,7 @@ class Case(object):
 				# Partition data stream
 				count = 0
 				for workitem in self._partition_task(component):
-					self.platform.data.save_workitem(workitem)
+					component.platform.data.save_workitem(workitem)
 
 					session.add(db.WorkItem(
 						case_id=self.id,
@@ -703,7 +722,8 @@ class Case(object):
 						index=workitem.index,
 						state=workitem.state,
 						substate=workitem.substate,
-						priority=workitem.priority))
+						priority=workitem.priority,
+						platform=component.platform.name))
 
 					session.commit()
 
@@ -742,7 +762,7 @@ class Case(object):
 		for port in task.in_ports:
 			psize = 0
 			for data_ref in port.data.refs:
-				port_data = self.platform.data.open_port_data(self.name, data_ref)
+				port_data = task.platform.data.open_port_data(self.name, data_ref)
 				data_ref.size = port_data.size()
 				psize += data_ref.size
 			port.data.size = psize
@@ -838,14 +858,19 @@ class Case(object):
 				if component in notify_component.waiting:
 					notify_component.waiting.remove(component)
 
-		if state == runstates.RUNNING and component.started is None:
-			component.started = datetime.now()
-			component.finished = None
+		if state == runstates.RUNNING:
+			if component.started is None:
+				component.started = datetime.now()
+				component.finished = None
+
+			#self.engine.case_started.send(self)
 
 		if state in runstates.TERMINAL_STATES:
 			component.finished = datetime.now()
 			if component.started is None:
 				component.started = component.finished
+
+			#self.engine.case_finished.send(self)
 
 	def update_states(self, session, component=None):
 		if component is None:
@@ -862,11 +887,14 @@ class Case(object):
 
 		if self.update_component_state(component, children_states):
 			session.query(db.Component).filter(db.Component.id == component.id)\
-					.update({db.Component.state : component.state})
-			if component == self.root_node:
-				self.state = component.state # update case state from the root node
-				session.query(db.Case).filter(db.Case.id == self.id).update({db.Case.state : self.state})
-			session.commit()
+					.update({db.Component.state : component.state,
+							 db.Component.started : component.started,
+							 db.Component.finished : component.finished})
+			if component == self.root_node and self._state != runstates.PAUSED:
+				prev_state = self.state
+				if component.state != prev_state:
+					self.state = component.state # update case state from the root node
+					session.query(db.Case).filter(db.Case.id == self.id).update({db.Case.state : self.state})
 
 	def update_component_state(self, component, children_states):
 		"""
@@ -961,24 +989,19 @@ class Case(object):
 			for child in component.children:
 				self.clean_components(session, child)
 	
-	def _prepare_for_continue(self, module = None):
+	def _reset_failures(self, session):
 		"""
-		Resets all failed or aborted modules to allow continuation of execution.
-		It is called just after a failure or stop before calling start again.
+		Resets all failed or aborted tasks to allow continuation of execution.
+		It is called before calling start when there has been a failure or stop.
 		"""
 
-		if module is None:
-			module = self.root_node
+		session.query(db.WorkItem).filter(db.WorkItem.case_id == self.id)\
+			.filter(db.WorkItem.state._in([runstates.FAILED, runstates.ABORTED]))\
+			.update({db.WorkItem.state : runstates.READY, db.WorkItem.substate : None})
 
-		if module.state in [runstates.FAILED, runstates.ABORTED]:
-			module.state = runstates.RUNNING
-			if module.is_leaf:
-				for t in module.tasks:
-					if t.state in [runstates.FAILED, runstates.ABORTED]:
-						t.state = runstates.READY
-			for m in module.children:
-				self._prepare_for_continue(m)
+		self.update_states(session)
 
+	#FIXME review
 	def _reset(self, module = None):
 		"Resets the state of the module and its children to an initial state."
 
@@ -999,45 +1022,54 @@ class Case(object):
 	def start(self):
 		if self.state not in [runstates.READY, runstates.RUNNING, runstates.PAUSED,
 								runstates.FAILED, runstates.ABORTED]:
-			raise Exception("Illegal action '%s' for state '%s'" % ("start", self.state))
+			raise Exception("Illegal action '{}' for state '{}'".format("start", self.state))
+
+		session = db.Session()
 
 		if self.state in [runstates.FAILED, runstates.ABORTED]:
-			self._prepare_for_continue()
+			self._reset_failures(session)
 		
-		self.state = runstates.RUNNING
+		self.state = runstates.READY
+		session.query(db.Case).filter(db.Case.id == self.id).update({db.Case.state : self.state})
 
-		self._log.info("Case started: {}".format(self.name))
+		session.commit()
+		session.close()
+
+		self._log.info("[{}] Case started".format(self.name))
 
 	def pause(self):
 		if self.state not in [runstates.RUNNING, runstates.PAUSED]:
-			raise Exception("Illegal action '%s' for state '%s'" % ("pause", self.state))
+			raise Exception("Illegal action '{}' for state '{}'".format("pause", self.state))
 
+		# FIXME update component state in the database
 		self.state = runstates.PAUSED
 
-		self._log.info("Case paused: {}".format(self.name))
+		self._log.info("[{}] Case paused".format(self.name))
 
 	def stop(self):
 		if self.state not in [runstates.RUNNING, runstates.PAUSED]:
-			raise Exception("Illegal action '%s' for state '%s'" % ("stop", self.state))
+			raise Exception("Illegal action '{}' for state '{}'".format("stop", self.state))
 
+		# FIXME update component state in the database
 		if self.state != runstates.READY:
 			self.state = runstates.ABORTING
 
-		self._log.info("Case aborted: {}".format(self.name))
+		self._log.info("[{}] Case aborted".format(self.name))
 
 	def reset(self):
 		if self.state not in [runstates.READY, runstates.PAUSED, runstates.FINISHED,
 								runstates.FAILED, runstates.ABORTED]:
-			raise Exception("Illegal action '%s' for state '%s'" % ("reset", self.state))
+			raise Exception("Illegal action '{}' for state '{}'".format("reset", self.state))
 
 		self._reset()
 
+		# FIXME update component state in the database
 		self.state = runstates.READY
 
-		self._log.info("Case reset: {}".format(self.name))
+		self._log.info("[{}] Case reset".format(self.name))
 
 	def reload(self):
-		self._log.info("Case reload: {}".format(self.name))
+		self._log.info("[{}] Case reloaded".format(self.name))
 
 		raise Exception("Unimplemented")
 
@@ -1084,6 +1116,10 @@ class Case(object):
 
 		session.close()
 		return q
+
+	@property
+	def storages(self):
+		return [platform.storage.get_container(self.container_name) for platform in self.platforms]
 
 	#TODO
 	"""
@@ -1146,10 +1182,10 @@ class SynchronizedCase(Synchronizable):
 		self.__case = case;
 
 	def __getattr__(self, name):
-		if name in ["name", "title", "state", "created", "started", "finished", "elapsed"]:
+		if name in ["name", "title", "state", "created", "started", "finished", "elapsed", "storages"]:
 			return getattr(self.__case, name)
 		else:
-			return AttributeError(name)
+			raise AttributeError(name)
 
 	@property
 	@synchronized

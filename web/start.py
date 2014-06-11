@@ -25,7 +25,7 @@ import os
 from datetime import datetime
 
 from wok import logger
-from wok.config.cli import OptionsConfig
+from wok.config.optionsconfig import OptionsConfig
 from wok.config.data import Data
 from wok.server import WokFlask, WokServer
 

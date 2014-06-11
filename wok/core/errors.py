@@ -19,9 +19,32 @@
 #
 ###############################################################################
 
-class UnimplementedError(Exception):
-	def __init__(self):
-		Exception.__init__(self, "Unimplemented")
+class MissingRequiredArgumentError(Exception):
+	def __init__(self, key):
+		Exception.__init__(self, "Missing required argument: '{}'".format(key))
+
+class MissingRequiredArgumentsError(Exception):
+	def __init__(self, keys):
+		Exception.__init__(self, "Missing required arguments: {}".format(", ".join(keys)))
+
+# Config
+
+class MissingConfigParamError(Exception):
+	def __init__(self, key):
+		Exception.__init__(self, "Missing configuration parameter: '{}'".format(key))
+
+class MissingConfigParamsError(Exception):
+	def __init__(self, keys):
+		Exception.__init__(self, "Missing configuration parameters: '{}'".format(", ".join(keys)))
+
+class ConfigTypeError(Exception):
+	def __init__(self, key, value=None):
+		if value is None:
+			Exception.__init__(self, "Wrong configuration type for '{}'".format(key))
+		else:
+			Exception.__init__(self, "Wrong configuration type for '{}': '{}'".format(key, value))
+
+# Engine
 
 class EngineAlreadyRunningError(Exception):
 	pass
@@ -32,17 +55,6 @@ class InvalidStatusOperationError(Exception):
 
 class EngineUninitializedError(Exception):
 	pass
-
-class ConfigMissingError(Exception):
-	def __init__(self, key):
-		Exception.__init__(self, "Missing configuration: '{}'".format(key))
-
-class ConfigTypeError(Exception):
-	def __init__(self, key, value=None):
-		if value is None:
-			Exception.__init__(self, "Wrong configuration type for '{}'".format(key))
-		else:
-			Exception.__init__(self, "Wrong configuration type for '{}': '{}'".format(key, value))
 
 # Job manager
 

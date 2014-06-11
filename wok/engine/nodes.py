@@ -19,6 +19,8 @@
 #
 ###############################################################################
 
+from datetime import timedelta
+
 from wok.config.data import Data
 
 from wok.core import runstates
@@ -89,14 +91,16 @@ class ComponentNode(ModelNode):
 
 		self._dirty = False
 
+		self.enabled = model.enabled
+
 		self.state = runstates.READY
 		self.substate = None
 
 		self.priority = None
 		self.priority_factor = None
 
-		self._maxpar = None
-		self._wsize = None
+		self._maxpar = model.maxpar
+		self._wsize = model.wsize
 
 		# set of modules that should finish before it can start
 		self.depends = set()
@@ -110,25 +114,16 @@ class ComponentNode(ModelNode):
 		# number of workitems for each state {<state, count>}
 		self.workitem_count_by_state = {}
 
-		# attributes
-		self.attr = Data.element()
-		if model.maxpar is not None:
-			self.attr["maxpar"] = model.maxpar
-		if model.wsize is not None:
-			self.attr["wsize"] = model.wsize
-
 		self.in_ports = []
 		self.in_port_map = {}
 
 		self.out_ports = []
 		self.out_port_map = {}
 
-		self._conf = None
+		self.conf = None
 		self._expanded_conf = None
 
-	@property
-	def enabled(self):
-		return self.model.enabled
+		self.platform = None
 
 	@property
 	def dirty(self):
@@ -154,8 +149,6 @@ class ComponentNode(ModelNode):
 	def maxpar(self):
 		if self._maxpar is not None:
 			return self._maxpar
-		elif self.model.maxpar is not None:
-			return self.model.maxpar
 		elif self.parent is not None:
 			return self.parent.maxpar
 		return 0
@@ -168,8 +161,6 @@ class ComponentNode(ModelNode):
 	def wsize(self):
 		if self._wsize is not None:
 			return self._wsize
-		elif self.model.wsize is not None:
-			return self.model.wsize
 		elif self.parent is not None:
 			return self.parent.wsize
 		return 1
@@ -177,26 +168,6 @@ class ComponentNode(ModelNode):
 	@wsize.setter
 	def wsize(self, value):
 		self._wsize = value
-
-	@property
-	def conf(self):
-		if self._conf is not None:
-			return self._conf
-
-		if self.parent is None:
-			conf = self.case.conf.clone()
-		else:
-			conf = self.parent.conf.clone()
-
-		if self.model.conf is not None:
-			conf.merge(self.model.conf)
-
-		self._conf = conf
-		self._expanded_conf = None
-
-		self.case.apply_task_rules(self, conf)
-
-		return self._conf
 
 	@property
 	def expanded_conf(self):
@@ -216,6 +187,12 @@ class ComponentNode(ModelNode):
 			res.merge(self.model.resources)
 
 		return res
+
+	@property
+	def elapsed(self):
+		if self.started is None or self.finished is None:
+			return timedelta()
+		return self.finished - self.started
 
 	def set_in_ports(self, in_ports):
 		self.in_ports = in_ports
@@ -237,7 +214,7 @@ class ComponentNode(ModelNode):
 			return self.out_port_map[name]
 		return None
 
-	def to_element(self, e = None):
+	def to_element(self, e=None):
 		e = ModelNode.to_element(self, e)
 		e["state"] = self.state.title
 		e["substate"] = self.substate.title
@@ -249,8 +226,9 @@ class ComponentNode(ModelNode):
 		e["serializer"] = self.serializer #TODO remove
 		e["maxpar"] = self.maxpar
 		e["wsize"] = self.wsize
-		#e["attr"] = self.attr
-		e["conf"] = self.model.conf
+		e["started"] = self.started
+		e["finished"] = self.finished
+		e["conf"] = self.conf
 		e["resources"] = self.resources
 		e.element("tasks_count", self._tasks_count_by_state)
 
@@ -345,7 +323,6 @@ class TaskNode(ComponentNode):
 
 	def repr_level(self, sb, level):
 		level = ComponentNode.repr_level(self, sb, level)
-		#TODO REMOVE sb.extend([self._INDENT * level, "WorkItems: ", str(self.workitems_count), "\n"])
 		if len(self.workitem_count_by_state) > 0:
 			sb.extend([self._INDENT * level, "WorkItems:\n"])
 			level += 1

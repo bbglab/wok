@@ -21,17 +21,17 @@ class FilesProvider(DataProvider):
 		indent=True
 	)
 
+	plugin_type = "files"
+
+	plugin_required_conf = ["path"]
+
 	def __init__(self, conf):
-		DataProvider.__init__(self, "sqlite", conf)
+		super(FilesProvider, self).__init__(conf)
 
-		default_work_path = os.path.abspath(os.path.join("wok", "sqlite_provider"))
-		if "work_path" not in conf:
-			self._log.warn("'work_path' not defined for '{}' data provider. Default is {}".format(self._name, default_work_path))
-
-		self._work_path = conf.get("work_path", default_work_path)
+		self._path = conf["path"]
 
 	def __case_path(self, case_name, create=True):
-		case_path = os.path.join(self._work_path, case_name)
+		case_path = os.path.join(self._path, case_name)
 		if create and not os.path.exists(case_path):
 			os.makedirs(case_path)
 		return case_path
@@ -57,16 +57,10 @@ class FilesProvider(DataProvider):
 			os.makedirs(ports_path)
 		return os.path.join(ports_path, "{}.db".format(port_name))
 
-	@property
-	def bootstrap_conf(self):
-		return dict(
-			type=self._conf["type"],
-			work_path=self._work_path)
-
 	def start(self):
-		if not os.path.exists(self._work_path):
-			self._log.debug("Creating  path {} ...".format(self._work_path))
-			os.makedirs(self._work_path)
+		if not os.path.exists(self._path):
+			self._log.debug("Creating path {} ...".format(self._path))
+			os.makedirs(self._path)
 
 	def close(self):
 		pass

@@ -3,9 +3,11 @@ from sqlalchemy.orm import relationship, backref
 
 from flask.ext.login import UserMixin
 
-from wok.core.db.customtypes import Config
+from wok.core.db.customtypes import Config, RunState
 
 from db import Base
+
+DB_VERSION = 2
 
 ADMIN_GROUP = "admin"
 USERS_GROUP = "users"
@@ -14,6 +16,12 @@ user_groups_table = Table('user_groups', Base.metadata,
     Column('user_id', Integer, ForeignKey('users.id')),
     Column('group_id', Integer, ForeignKey('groups.id'))
 )
+
+class DbParam(Base):
+	__tablename__ = "__db_params"
+
+	name = Column(String, primary_key=True)
+	value = Column(String)
 
 class Grant(object):
 	id = Column(Integer, primary_key=True)
@@ -79,9 +87,13 @@ class Case(Base):
 
 	name = Column(String)
 	created = Column(DateTime)
+	started = Column(DateTime)
+	finished = Column(DateTime)
+	state = Column(RunState)
 	removed = Column(Boolean, default=False)
-	engine_name = Column(String)
-	flow_uri = Column(String)
+	engine_name = Column(String, index=True, unique=True)
+	project_name = Column(String)
+	flow_name = Column(String)
 	conf = Column(Config)
 	properties = Column(Config)
 

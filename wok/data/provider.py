@@ -1,15 +1,11 @@
-from wok import logger
-from wok.core.errors import UnimplementedError
+from wok.core.plugin import Plugin
 
 from stream import Stream
 
-class DataProvider(object):
+class DataProvider(Plugin):
 
-	def __init__(self, name, conf):
-		self._name = name
-		self._conf = conf
-
-		self._log = logger.get_logger("wok.data.{}".format(name))
+	def __init__(self, conf):
+		super(DataProvider, self).__init__(conf, logger_name="wok.data.{}".format(self.plugin_type))
 
 	# ------------------------------------------------------------------------------------------------------------------
 
@@ -68,36 +64,32 @@ class DataProvider(object):
 
 	# API --------------------------------------------------------------------------------------------------------------
 
-	@property
-	def bootstrap_conf(self):
-		return dict()
-
 	def start(self):
-		raise UnimplementedError()
+		raise NotImplementedError()
 
 	def close(self):
-		raise UnimplementedError()
+		raise NotImplementedError()
 
 	def save_task(self, task):
-		raise UnimplementedError()
+		raise NotImplementedError()
 
 	def load_task(self, case_name, task_cname):
-		raise UnimplementedError()
+		raise NotImplementedError()
 
 	def save_workitem(self, case_name, task):
-		raise UnimplementedError()
+		raise NotImplementedError()
 
 	def load_workitem(self, case_name, task_cname, index):
-		raise UnimplementedError()
+		raise NotImplementedError()
 
 	def save_workitem_result(self, case_name, task_cname, index, result):
-		raise UnimplementedError()
+		raise NotImplementedError()
 
 	def load_workitem_result(self, case_name, task_cname, index):
-		raise UnimplementedError()
+		raise NotImplementedError()
 
 	def open_port_data(self, case_name, data_ref):
-		raise UnimplementedError()
+		raise NotImplementedError()
 
 	def remove_port_data(self, port):
-		raise UnimplementedError()
+		raise NotImplementedError()

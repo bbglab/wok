@@ -36,8 +36,7 @@ def synchronized(f):
 					obj._release()
 				except ThreadError:
 					from wok.logger import get_logger
-					logger_name = "wok.synchronized"
-					get_logger(logger_name).error("<RELEASE ERROR {}.{}>".format(obj.__class__.__name__, f.__name__))
+					get_logger(__name__).warn("<RELEASE ERROR {}.{}>".format(obj.__class__.__name__, f.__name__))
 		return sync_function
 	return wrap(f)
 

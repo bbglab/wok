@@ -1,6 +1,6 @@
 ###############################################################################
 #
-#    Copyright 2009-2011, Universitat Pompeu Fabra
+#    Copyright 2009-2013, Universitat Pompeu Fabra
 #
 #    This file is part of Wok.
 #
@@ -21,13 +21,12 @@
 
 import os
 
-from wok.config import COMMAND_CONF
 from wok.config.data import Data
 
 from cmd import CommmandBuilder
-from constants import FLOW_PATH, SCRIPT_PATH, MODULE_SCRIPT_PATH
+from constants import ENV_PROJECT_PATH, ENV_FLOW_PATH, ENV_SCRIPT_PATH, ENV_PLATFORM_SCRIPT_PATH, CTX_EXEC
+from wok.core import rtconf
 from wok.core.errors import MissingValueError, LanguageError
-
 
 class NativeCommmandBuilder(CommmandBuilder):
 	def _plain_conf(self, value, path=None):
@@ -54,56 +53,48 @@ class NativeCommmandBuilder(CommmandBuilder):
 
 		lang = exec_conf.get("language", "python")
 
-		mod_conf = case.conf.clone().expand_vars()
-
-		cmd_conf = mod_conf.get(COMMAND_CONF, default=Data.element)
-		#native_conf = cmd_conf.get("default", default=Data.element)
-		#native_conf.merge(cmd_conf.get("native", default=Data.element))
+		case_conf = case.conf.clone().expand_vars()
 
 		# Environment variables
 		env = Data.element()
 		#for k, v in os.environ.items():
 		#	env[k] = v
-		env.merge(cmd_conf.get("default.env"))
-		env.merge(cmd_conf.get("{}.env".format(lang)))
+		env.merge(task.conf.get(rtconf.TASK_ENV))
 		env.merge(exec_conf.get("env"))
 
 		# Default module script path
+		platform_project_path = task.conf.get(rtconf.PROJECT_PATH, case.project.path)
 		flow_path = os.path.abspath(os.path.dirname(task.flow_path))
-		env[FLOW_PATH] = flow_path
-		env[SCRIPT_PATH] = script_path
-		env[MODULE_SCRIPT_PATH] = os.path.join(flow_path, script_path)
+		flow_rel_path = os.path.relpath(flow_path, case.project.path)
+		platform_script_path = os.path.join(platform_project_path, flow_rel_path, script_path)
+		env[ENV_PROJECT_PATH] = platform_project_path
+		env[ENV_FLOW_PATH] = flow_rel_path
+		env[ENV_SCRIPT_PATH] = script_path
+		env[ENV_PLATFORM_SCRIPT_PATH] = platform_script_path
 
 		script = []
 		
-		default_sources = cmd_conf.get("default.source", default=Data.list)
-		if isinstance(default_sources, basestring):
-			default_sources = Data.list([default_sources])
-
-		sources = cmd_conf.get("{}.source".format(lang), default=Data.list)
+		sources = task.conf.get(rtconf.TASK_SOURCES, default=Data.list)
 		if isinstance(sources, basestring):
 			sources = Data.list([sources])
 
-		for source in default_sources + sources:
-			script += ["source {}".format(source)]
+		for source in sources:
+			script += ['source "{}"'.format(source)]
 	
 		if lang == "python":
-			virtualenvs = cmd_conf.get("{}.virtualenv".format(lang), default=Data.list)
-			if isinstance(virtualenvs, basestring):
-				virtualenvs = Data.list([virtualenvs])
-
-			#script += ["set -x"]
-			for virtualenv in virtualenvs:
+			virtualenv = task.conf.get(rtconf.TASK_PYTHON_VIRTUALENV)
+			if virtualenv is not None:
+				#script += ["set -x"]
 				#script += ["echo Activating virtualenv {} ...".format(virtualenv)]
-				script += ["source '{}'".format(os.path.join(virtualenv, "bin", "activate"))]
-			#script += ["set +x"]
+				script += ['source "{}"'.format(os.path.join(virtualenv, "bin", "activate"))]
+				#script += ["set +x"]
 
 			#script += ["echo Running workitem ..."]
 
-			cmd = [cmd_conf.get("python.bin", "python")]
-			cmd += [script_path if os.path.isabs(script_path) else "${}".format(MODULE_SCRIPT_PATH)]
+			cmd = [task.conf.get(rtconf.TASK_PYTHON_BIN, "python")]
+			cmd += ["${}".format(ENV_PLATFORM_SCRIPT_PATH)]
 
-			lib_path = cmd_conf.get("python.lib_path")
+			lib_path = task.conf.get(rtconf.TASK_PYTHON_LIBS)
 			if lib_path is not None:
 				if Data.is_list(lib_path):
 					lib_path = ":".join(lib_path)
@@ -122,8 +113,11 @@ class NativeCommmandBuilder(CommmandBuilder):
 		#for key, value in self._storage_conf(workitem.case.engine.storage.basic_conf):
 		#	cmd += ["-D", "storage.{}={}".format(key, value)]
 
-		for key, value in self._plain_conf(Data.create(case.platform.data.bootstrap_conf)):
+		for key, value in self._plain_conf(Data.create(task.platform.data.context_conf(CTX_EXEC))):
 			cmd += ["-D", "data.{}={}".format(key, value)]
+
+		for key, value in self._plain_conf(task.platform.storage.context_conf(CTX_EXEC)):
+			cmd += ["-D", "storage.{}={}".format(key, value)]
 
 		script += [" ".join(cmd)]
 		
