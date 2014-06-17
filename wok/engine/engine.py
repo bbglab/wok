@@ -475,15 +475,19 @@ class WokEngine(Synchronizable):
 				_log.debug(format_exc())
 
 				try:
-					session.rollback()
-				except:
+					if session is not None:
+						session.rollback()
+				except Exception as ex:
 					_log.warn("Session rollback failed")
+					_log.exception(ex)
 
 			finally:
 				try:
-					session.close()
-				except:
+					if session is not None:
+						session.close()
+				except Exception as ex:
 					_log.warn("Session close failed")
+					_log.exception(ex)
 
 				session = None
 
@@ -497,7 +501,9 @@ class WokEngine(Synchronizable):
 			for t in self._logs_threads:
 				t.join()
 
+			self._lock.release()
 			self._join_thread.join()
+			self._lock.acquire()
 
 			_log.debug("Engine run thread finished")
 		except Exception as ex:
@@ -692,15 +698,19 @@ class WokEngine(Synchronizable):
 				_log.debug(format_exc())
 
 				try:
-					session.rollback()
-				except:
+					if session is not None:
+						session.rollback()
+				except Exception as ex:
 					_log.warn("Session rollback failed")
+					_log.exception(ex)
 
 			finally:
 				try:
-					session.close()
-				except:
+					if session is not None:
+						session.close()
+				except Exception as ex:
 					_log.warn("Session close failed")
+					_log.exception(ex)
 
 		self._num_alive_threads -= 1
 
