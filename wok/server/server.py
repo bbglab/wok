@@ -360,7 +360,7 @@ class WokServer(object):
 		#while self.engine.exists_case(engine_case_name):
 		#	engine_case_name = "{}-{}".format(user.nick, uuid4().hex[-6:])
 
-		engine_case = self.engine.create_case(engine_case_name, conf_builder, project_name, flow_name)
+		engine_case = self.engine.create_case(engine_case_name, conf_builder, project_name, flow_name, engine_case_name)
 
 		case.created = engine_case.created
 		case.engine_name = engine_case_name
