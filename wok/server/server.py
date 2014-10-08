@@ -10,6 +10,10 @@ from flask import Flask, redirect, url_for, current_app, session
 
 from flask.ext.login import LoginManager
 
+from tornado.wsgi import WSGIContainer
+from tornado.httpserver import HTTPServer
+from tornado.ioloop import IOLoop
+
 #from flask.ext.login import (LoginManager, current_user, login_required,
 #							login_user, logout_user, UserMixin, AnonymousUser,
 #							confirm_login, fresh_login_required)
@@ -242,10 +246,9 @@ class WokServer(object):
 
 			self.logger.info("Listening on {}:{} ...".format(args.host, args.port))
 
-			app.run(
-				host=args.host,
-				port=args.port,
-				debug=args.debug)
+			http_server = HTTPServer(WSGIContainer(app))
+			http_server.listen(args.port)
+			IOLoop.instance().start()
 
 			# user has pressed ctrl-C and flask stops
 

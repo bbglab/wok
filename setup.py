@@ -39,7 +39,8 @@ setup(
 		#'pygments',
 		'Flask==0.10.1',
 		'Flask-Login==0.2.8',
-		'blinker==1.3'
+		'blinker==1.3',
+		'tornado>=4.0.2'
 	],
 
     include_package_data = True,
