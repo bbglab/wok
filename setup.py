@@ -38,7 +38,7 @@ setup(
 		'SQLAlchemy==0.8.2',
 		#'pygments',
 		'Flask==0.10.1',
-		'Flask-Login==0.2.8',
+		'Flask-Login==0.2.11',
 		'blinker==1.3',
 		'tornado>=4.0.2'
 	],
